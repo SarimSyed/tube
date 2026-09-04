@@ -1,0 +1,87 @@
+services:
+  tube:
+    build: .
+    container_name: tube
+    ports:
+      - "${PORT:-7000}:7000"
+    environment:
+      PORT: "7000"
+      RD_API_KEY: "${RD_API_KEY:-}"
+      TMDB_API_KEY: "${TMDB_API_KEY:-}"
+      # When the `search` profile is enabled, Tube uses the bundled Zilean fork.
+      ZILEAN_URL: "${ZILEAN_URL:-http://zilean:8181}"
+      ZILEAN_API_KEY: "${ZILEAN_API_KEY:-}"
+      TORZNAB_URL: "${TORZNAB_URL:-}"
+      TORZNAB_API_KEY: "${TORZNAB_API_KEY:-}"
+      CACHE_TTL_SECONDS: "${CACHE_TTL_SECONDS:-120}"
+      INCLUDE_UNCACHED: "${INCLUDE_UNCACHED:-false}"
+      SHOW_LIBRARY_CATALOGS: "${SHOW_LIBRARY_CATALOGS:-false}"
+      SHOW_SEARCH_CATALOGS: "${SHOW_SEARCH_CATALOGS:-false}"
+    volumes:
+      - tube-data:/app/data
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # RD Search backend: the actively-maintained Zilean fork (SolidRhino line).
+  #
+  # Enable the whole search stack with:
+  #   docker compose --profile search up -d
+  #
+  # Using the published image for now. When we make our own fork (see
+  # ./zilean-fork/docs/OUR-FORK.md), add `build: ./zilean-fork` back and run
+  # `docker compose --profile search up -d --build`.
+  #
+  # First start performs a full DMM hashlist import (takes a while and several
+  # GB of RAM); after that, syncs are incremental. Data persists in the
+  # zilean-db-data volume.
+  # ---------------------------------------------------------------------------
+  zilean:
+    profiles: ["search"]
+    image: ghcr.io/solidrhino/zilean:latest
+    container_name: zilean
+    restart: unless-stopped
+    ports:
+      - "${ZILEAN_PORT:-8184}:8181"
+    environment:
+      POSTGRES_HOST: zilean-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: zilean
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      ASPNETCORE_URLS: "http://+:8181"
+    volumes:
+      - zilean-data:/app/data
+    healthcheck:
+      test: curl --connect-timeout 5 --silent --show-error --fail http://localhost:8181/healthchecks/ping
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    depends_on:
+      zilean-db:
+        condition: service_healthy
+
+  zilean-db:
+    profiles: ["search"]
+    image: postgres:17-alpine
+    container_name: zilean-db
+    restart: unless-stopped
+    shm_size: 1G
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-postgres}"
+      POSTGRES_DB: zilean
+    volumes:
+      - zilean-db-data:/var/lib/postgresql/data
+    # Required extensions (pg_trgm, unaccent, btree_gin, btree_gist) are created
+    # by Zilean's own EF Core migrations on first startup — no init script needed.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zilean"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  tube-data:
+  zilean-data:
+  zilean-db-data:
