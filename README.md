@@ -20,10 +20,10 @@ Optional catalogs (enable `SHOW_LIBRARY_CATALOGS=true` for Library/Downloads or 
 | Catalog | What it shows |
 | --- | --- |
 | **RD Library** | Everything already in your Real-Debrid torrents (movies & series) |
-| **RD Downloads** | Your unrestricted hoster links / downloads |
+| **RD Downloads** | Your unrestricted Real-Debrid hoster links / downloads |
 | **RD Search** | One card per title from the search index; available releases appear in the stream picker |
 
-TorBox offers TB Library and TB Search, without hoster downloads. These server settings apply to all installs on that server. Reinstall Tube in Stremio after changing catalog settings so Stremio refreshes its installed manifest.
+TorBox offers the equivalent **TB Library** and **TB Search** catalogs; it has no hoster-download catalog. These server settings apply to all installs on that server. Reinstall Tube in Stremio after changing catalog settings so Stremio refreshes its installed manifest.
 
 ### Optional TorBox downloads
 
@@ -35,12 +35,13 @@ The default sends `add_only_if_cached=true`. Only the opted-in fallback submits 
 
 Key properties:
 
-- **No video passes through the addon.** The addon serves JSON and 302-able URLs;
-  video streams come directly from Real-Debrid's CDN, so the addon is tiny and cheap
-  to run.
-- **Token-in-URL.** Your Real-Debrid API token is embedded in your install URL
-  (the same model as Torrentio / DMM Cast). The server persists blocked torrent hashes; account response caches are isolated
-  by provider and token. One instance can serve many users.
+- **No video passes through the addon.** The addon serves JSON and redirectable URLs;
+  video streams come directly from Real-Debrid or TorBox, so the addon is tiny and
+  cheap to run.
+- **Token-in-URL.** Your provider token is embedded in your install URL (the same
+  model as Torrentio / DMM Cast). Keep the URL private. The server persists blocked
+  torrent hashes; account response caches are isolated by provider and token. One
+  instance can serve many users.
 - **Degrades gracefully.** If the search index is down, your RD Library and
   Downloads still play — the "library" half never depends on external scrapers.
 
@@ -49,15 +50,18 @@ Key properties:
 - **Normal Stremio title/episode** → cached Cinemeta title lookup → match your cloud or search the torrent index → provider cache check → direct stream. This path does not call TMDB or build custom search cards. Discovery includes torrents outside your account.
 - **Library browse** → `Real-Debrid /torrents` + `/downloads`, filenames parsed and
   enriched with posters from TMDB.
-- **Library play** → provider torrent details → direct download URL. RD landing-page links must be unrestricted first.
+- **Library play** → provider torrent details → direct download URL. Real-Debrid
+  landing-page links must be unrestricted first.
 - **Search** → a [Zilean](https://github.com/iPromKnight/zilean) index (optionally
   Jackett/Prowlarr via Torznab) → title grouping → provider availability checks.
   TorBox uses its own `/torrents/checkcached` API. If RD instant availability is
   disabled, titles remain visible and bounded probing determines which releases play.
 - **Search play** → reuse an existing cloud torrent or add an available magnet,
-  resolve the requested video, and return its direct URL. Temporary probes are
-  cleaned up; existing cloud torrents are retained. Confirmed blocked hashes are
-  skipped on later attempts; transient API failures are not permanently blacklisted.
+  resolve the requested video, and return its direct URL. Cached probes are cleaned
+  up; existing cloud torrents are retained. An explicitly enabled TorBox download
+  is retained while it completes and appears as a dashboard status entry. Confirmed
+  blocked hashes are skipped on later attempts; transient API failures are not
+  permanently blacklisted.
 
 ## Prerequisites
 
@@ -176,9 +180,12 @@ npm run build        # emit dist/
 
 - **Real-Debrid and TorBox** torrent playback are supported. Hoster downloads are
   currently Real-Debrid only. TorBox adds only cached torrents unless the installation explicitly enables the download fallback described above.
-- A token URL grants full access to that Real-Debrid account — keep it private,
-  the same way you would with a Torrentio or DMM Cast install link.
-- Use Stremio's normal search and select a movie or episode. Resolving streams can add cached torrents to your provider account; browsing the normal catalog does not add them.
+- A token URL grants access to that provider account — keep it private, the same
+  way you would with a Torrentio or DMM Cast install link.
+- Use Stremio's normal search and select a movie or episode. Resolving streams can
+  add cached torrents to your provider account; with the TorBox download option it
+  can also queue one matching uncached torrent. Browsing the normal catalog does not
+  add torrents.
 - An uncached or provider-blocked file cannot be played immediately. Tube tries
   matching alternatives and never presents an HTML landing page as a video.
 - Newly generated search IDs retain title context across restarts. Re-run old
@@ -197,5 +204,3 @@ docker compose up -d --build --no-deps tube
 Then open `/configure`, remove the previous Tube addon in Stremio, and install the generated link. This refreshes Stremio's saved manifest and removes the old separate search rows. No API-key change is required for this update. The old `probe-neg.json`
 file is ignored because it mixed blocked files with temporary failures; the new
 blocked-only store starts fresh automatically.
-
-
