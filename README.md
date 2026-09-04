@@ -1,3 +1,5 @@
+Logo attribution: <a href="https://www.flaticon.com/free-icons/stage" title="stage icons">Stage icons created by Magnific - Flaticon</a>
+
 # Tube — Self-hosted Stremio addon for Real-Debrid and TorBox
 
 A self-hosted [Stremio](https://www.stremio.com/) addon that works with your
@@ -195,3 +197,5 @@ docker compose up -d --build --no-deps tube
 Then open `/configure`, remove the previous Tube addon in Stremio, and install the generated link. This refreshes Stremio's saved manifest and removes the old separate search rows. No API-key change is required for this update. The old `probe-neg.json`
 file is ignored because it mixed blocked files with temporary failures; the new
 blocked-only store starts fresh automatically.
+
+
