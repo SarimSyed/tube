@@ -1,3 +1,5 @@
+// Tests TmdbClient.search title/year matching with a stubbed fetch, ensuring an
+// unrelated first hit does not relabel the requested title.
 import { afterEach, expect, it, vi } from 'vitest';
 import { TmdbClient } from '../src/services/tmdb.js';
 afterEach(()=>vi.unstubAllGlobals());

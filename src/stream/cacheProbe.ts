@@ -1,10 +1,24 @@
+/**
+ * Bounded cache-availability probing for torrent-index candidates.
+ *
+ * `findCachedStreams` figures out which of the given releases a debrid
+ * provider already has cached (so they stream instantly) and turns them into
+ * stream objects. Positive availability is delegated to the provider (the
+ * `CachedRealDebrid` wrapper TTL-caches it); negative results — hashes the
+ * provider reports as blocked/infringing — are recorded in the caller-supplied
+ * `negatives` set (backed by `NegativeStore` or the `misc` cache's `probe-neg`
+ * key) so they are skipped on later requests. Temporary errors and uncached
+ * files are never stored as negatives.
+ */
 import { RealDebridError, isBlockedFileError, type RdGateway } from '../services/realdebrid.js';
 import type { TorrentResult } from '../types.js';
 import type { Stream } from '../stremio.js';
 import { torrentStreams } from './resolver.js';
 import { parseFilename, normalizeLanguage } from '../meta/parser.js';
 
+/** Default grace window (ms) for an RD candidate to reach a terminal state. */
 const DEFAULT_GRACE_MS = 8_000;
+/** Default cap on returned RD streams. */
 const DEFAULT_MAX = 3;
 /** Aim to show at least this many entries (cached + downloading) before giving up. */
 const DOWNLOAD_TARGET = 30;
@@ -20,6 +34,7 @@ function qualityRank(q?: string): number {
   return QUALITY_RANK[q.toLowerCase()] ?? -1;
 }
 
+/** Tunables for `findCachedStreams`; every field is optional with sane defaults. */
 export interface ProbeOptions {
   season?: number;
   episode?: number;
@@ -45,6 +60,7 @@ export interface ProbeOptions {
   canDownload?: (result: TorrentResult) => boolean;
 }
 
+/** Poll `fn` until `predicate` passes or `timeoutMs` elapses, returning the last value. */
 async function poll<T>(
   fn: () => Promise<T>,
   predicate: (v: T) => boolean,
@@ -66,6 +82,13 @@ async function poll<T>(
  * has cached. A cached magnet resolves to `downloaded` within seconds; an
  * uncached one stays `downloading`, so we delete it again to keep the user's
  * account clean and move on to the next candidate.
+ *
+ * For TorBox the provider cache check is authoritative, so cached releases are
+ * added quickly (no RD-style throttle) and, when `allowUncached` is set, a few
+ * uncached releases are submitted as background downloads and surfaced as
+ * "downloading" placeholder streams.
+ *
+ * @returns Playable streams — cached releases first, capped by `opts.max`.
  */
 export async function findCachedStreams(
   rd: RdGateway,
@@ -161,6 +184,7 @@ export async function findCachedStreams(
     attempts += 1;
     try {
       id = existingId ?? (await rd.addMagnet(`magnet:?xt=urn:btih:${r.infoHash}`)).id;
+      // Terminal states stop polling: either playable or a hard failure.
       const terminal = (status: string) => ['downloaded', 'error', 'magnet_error', 'virus', 'dead'].includes(status);
       const deadline = Math.min(stopAt, Date.now() + graceMs);
       let info = await poll(
@@ -195,6 +219,8 @@ export async function findCachedStreams(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[probe] failed (${r.infoHash.slice(0, 8)}…):`, msg);
+      // A confirmed block is recorded (persisted) and this candidate is skipped;
+      // throttle/auth errors are not negatives — they abort the whole probe.
       if (isBlockedFileError(err)) opts.negatives?.add(r.infoHash);
       const throttled = (err instanceof RealDebridError && err.status === 429) || /throttl|rate limit/i.test(msg);
       if (throttled || (err instanceof RealDebridError && [401, 403].includes(err.status))) return streams;

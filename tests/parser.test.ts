@@ -1,3 +1,5 @@
+// Tests the best-effort release-name parser (parseFilename, guessType,
+// isVideoFile, normalizeLanguage) used to label streams and catalog entries.
 import { describe, it, expect } from 'vitest';
 import { parseFilename, guessType, isVideoFile, normalizeLanguage } from '../src/meta/parser.js';
 

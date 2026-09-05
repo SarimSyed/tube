@@ -1,7 +1,11 @@
+// Tests the setup page's inline <script> (renderConfigurePage) by extracting and
+// running it in a node:vm sandbox with a stub document. Verifies install-URL
+// encoding for RD/TorBox and the TorBox uncached-download opt-in.
 import { expect, it } from 'vitest';
 import { runInNewContext } from 'node:vm';
 import { renderConfigurePage } from '../src/configure.js';
 
+// Execute the page's inline <script> in a vm sandbox with a minimal stub document.
 function page() {
   const nodes = new Map<string, any>();
   const document = { getElementById(id: string) {

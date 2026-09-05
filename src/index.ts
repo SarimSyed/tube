@@ -1,3 +1,13 @@
+// Tube addon entry point. Wires config, caches, negative stores, debrid clients,
+// catalogs, the meta service, and the stream resolver into an Express server that
+// implements the Stremio protocol (manifest / catalog / meta / stream) plus a
+// `/configure` setup page.
+//
+// The debrid token is not persisted server-side for Stremio traffic: the client
+// installs the addon with the token embedded in the URL path (e.g.
+// `/<token>/manifest.json`). `resolveToken` reads that segment (falling back to
+// `?apiKey=` or `RD_API_KEY`), and a fresh debrid client is built per request so
+// each provider/token gets its own identity and data.
 import express from 'express';
 import type { Request, Response } from 'express';
 import { join, dirname } from 'node:path';
@@ -44,6 +54,8 @@ try {
 const tmdb = config.tmdbApiKey ? new TmdbClient(config.tmdbApiKey) : null;
 const metaService = new MetaService(tmdb, caches);
 
+// Torrent indexes, queried in order. Zilean and Torznab are opt-in; The Pirate
+// Bay is always registered so search has at least one backend.
 const providers = [];
 if (config.zileanUrl) providers.push(new ZileanProvider(config.zileanUrl, config.zileanApiKey ?? undefined));
 providers.push(new PirateBayProvider());
@@ -52,12 +64,23 @@ if (config.torznabUrl && config.torznabApiKey) {
 }
 const searchService = new SearchService(providers, caches);
 
+/**
+ * Absolute base URL for building self-referential manifest/static links.
+ * Prefers the configured `BASE_URL` (trailing slash stripped); otherwise
+ * reconstructs it from the request, honoring the left-most `X-Forwarded-Proto`
+ * value so links stay correct behind a reverse proxy.
+ */
 function requestBaseUrl(req: Request): string {
   if (config.baseUrl) return config.baseUrl.replace(/\/$/, '');
   const proto = (req.get('x-forwarded-proto') || req.protocol || 'http').split(',')[0].trim();
   return `${proto}://${req.get('host')}`;
 }
 
+/**
+ * Resolves the debrid credential for a request from, in order: the `:token`
+ * path segment (URL-decoded), the `?apiKey=` query param, or `RD_API_KEY`.
+ * Returns `null` when none is present, so callers can redirect to `/configure`.
+ */
 function resolveToken(req: Request): string | null {
   const pathToken = req.params.token;
   if (pathToken) return decodeURIComponent(pathToken);
@@ -66,6 +89,10 @@ function resolveToken(req: Request): string | null {
   return config.rdApiKey;
 }
 
+/**
+ * Parses Stremio's `extra` path segment (a URL query string, sometimes with a
+ * trailing `.json`) into `search` and `skip` for catalog filtering/paging.
+ */
 function parseExtra(raw: string): { search?: string; skip?: number } {
   const out: { search?: string; skip?: number } = {};
   if (!raw) return out;
@@ -80,10 +107,16 @@ function parseExtra(raw: string): { search?: string; skip?: number } {
   return out;
 }
 
+/** Decodes a path segment and drops Stremio's trailing `.json` suffix. */
 function stripJson(id: string): string {
   return decodeURIComponent(id.replace(/\.json$/, ''));
 }
 
+/**
+ * Uniform error response. A 401 from Real-Debrid maps to Stremio's
+ * `invalid_token` code (prompting the client to re-open `/configure`); anything
+ * else is logged server-side and returned as a generic 500.
+ */
 function sendError(res: Response, err: unknown): void {
   if (err instanceof RealDebridError && err.status === 401) {
     res.status(401).json({ err: 'invalid_token', hint: 'Re-open /configure to update your token' });
@@ -130,6 +163,12 @@ app.get('/:token/configure', (req, res) => {
 app.use('/static', express.static(join(__dirname, '..', 'public')));
 
 // ---- manifest ----
+/**
+ * Serves the Stremio manifest. It is built per request because the provider
+ * identity (RD vs TorBox) — and therefore the addon id/name and catalog set —
+ * depends on the token. Without a token, redirect to `/configure` so Stremio's
+ * "Configure" flow can collect one.
+ */
 function manifestHandler(req: Request, res: Response): void {
   const token = resolveToken(req);
   if (!token) {
@@ -138,10 +177,18 @@ function manifestHandler(req: Request, res: Response): void {
   }
   res.type('application/json').send(buildManifest(config, requestBaseUrl(req), createDebridClient(token, config).provider));
 }
+// Both mount points: the bare path (token via query/env) and the token-in-path
+// form Stremio installs.
 app.get('/manifest.json', manifestHandler);
 app.get('/:token/manifest.json', manifestHandler);
 
 // ---- catalog ----
+/**
+ * Serves library/downloads/search catalogs. A fresh debrid client is built per
+ * request from the token; `SEARCH_CATALOG` queries the torrent index while
+ * `LIBRARY_CATALOG` / `DOWNLOADS_CATALOG` list the user's debrid cloud. Unknown
+ * ids resolve to an empty list so Stremio's discovery browsing stays quiet.
+ */
 function catalogHandler(req: Request, res: Response): void {
   const token = resolveToken(req);
   if (!token) {
@@ -179,6 +226,11 @@ app.get('/:token/catalog/:type/:id', catalogHandler);
 app.get('/:token/catalog/:type/:id/:extra', catalogHandler);
 
 // ---- meta ----
+/**
+ * Serves meta for OUR ids (`rd:` library, `sr:` search). Normal `tt` ids are
+ * proxied to Cinemeta as a safety net (see below) so posters keep working even
+ * if a client ignores the manifest's `idPrefixes`.
+ */
 function metaHandler(req: Request, res: Response): void {
   const token = resolveToken(req);
   if (!token) {
@@ -233,6 +285,12 @@ async function proxyCinemetaMeta(type: ContentType, id: string): Promise<Meta | 
 }
 
 // ---- stream ----
+/**
+ * Resolves streams for a title. `tt` ids go through the full search path
+ * (cloud + torrent index), while `rd:`/`sr:` ids resolve a specific stored item.
+ * TorBox and Real-Debrid keep separate negative stores so a hash blocked on one
+ * provider does not poison the other.
+ */
 function streamHandler(req: Request, res: Response): void {
   const token = resolveToken(req);
   if (!token) {

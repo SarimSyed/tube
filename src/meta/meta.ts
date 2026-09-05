@@ -1,11 +1,19 @@
+// Builds Stremio meta cards (MetaPreview / Meta) from parsed torrent/library
+// data, enriching titles and artwork via TMDB with a free Cinemeta fallback.
+
 import type { EnrichedMeta, ParsedMedia } from '../types.js';
 import type { ContentType, Meta, MetaPreview, Video } from '../stremio.js';
 import type { TmdbClient } from '../services/tmdb.js';
 import type { CacheSet } from '../services/cache.js';
 import { normalizeTitle } from './parser.js';
 
+/** Words kept lowercase when not the first word of a title-cased string. */
 const SMALL_WORDS = new Set(['a', 'an', 'the', 'of', 'and', 'for', 'with', 'in', 'on', 'to', 'vs', 'at']);
 
+/**
+ * Title-case a name using English conventions: every word capitalized except
+ * the small words above when not first. Used when no TMDB/Cinemeta name exists.
+ */
 export function titleCase(input: string): string {
   return input
     .split(/\s+/)
@@ -17,21 +25,37 @@ export function titleCase(input: string): string {
     .join(' ');
 }
 
+/**
+ * Builds Stremio `Meta`/`MetaPreview` cards for parsed media. Enriches names,
+ * posters and backgrounds from TMDB when configured, falling back to the free
+ * Cinemeta index so covers still appear without a TMDB key. Relies on the
+ * addon's self-defined ids (`rd:` / `sr:`, see `id.ts`) for meta/video ids.
+ */
 export class MetaService {
   constructor(
     private tmdb: TmdbClient | null,
     private caches: CacheSet,
   ) {}
 
+  /** Fallback poster URL used when no TMDB/Cinemeta image is available. */
   placeholderPoster(baseUrl: string): string {
     return `${baseUrl}/static/poster.png`;
   }
 
+  /** Fallback background URL used when no TMDB/Cinemeta image is available. */
   placeholderBackground(baseUrl: string): string {
     return `${baseUrl}/static/background.png`;
   }
 
-  /** Series need episode metadata: a torrent index often only describes packs. */
+  /**
+   * Build a full series `Meta` with per-episode `videos`, sourced from the free
+   * Cinemeta index. Torrent indexes often only describe a season pack, so the
+   * episode list must come from an external catalog. `imdbId` is used directly
+   * when present (the title is still verified to reject wrong-show matches);
+   * otherwise the title is searched. Results are cached under a normalized
+   * title/year key; returns `null` when nothing is found or Cinemeta is
+   * unreachable (callers keep the indexed episodes).
+   */
   async seriesMeta(title: string, year?: number, imdbId?: string): Promise<Meta | null> {
     const key = `series-episodes:${normalizeTitle(title)}:${year ?? ''}`;
     const cached = this.caches.tmdb.get(key) as Meta | undefined;
@@ -71,6 +95,7 @@ export class MetaService {
     }
   }
 
+  /** Fetch a single Cinemeta card by IMDb id (`tt…`) and cache it. */
   private async cinemetaById(ttId: string, type: ContentType): Promise<EnrichedMeta | null> {
     const cacheKey = `cinemeta-meta:${ttId}`;
     const cached = this.caches.tmdb.get(cacheKey) as EnrichedMeta | undefined;
@@ -97,6 +122,10 @@ export class MetaService {
     }
   }
 
+  /**
+   * Search Cinemeta by title (and optional year) and return the first card
+   * whose normalized name matches, cached by a title/year key.
+   */
   private async cinemetaByTitle(title: string, type: ContentType, year?: number): Promise<EnrichedMeta | null> {
     const cacheKey = `cinemeta-search:${type}:${title.toLowerCase()}:${year ?? ''}`;
     const cached = this.caches.tmdb.get(cacheKey) as EnrichedMeta | undefined;
@@ -126,6 +155,12 @@ export class MetaService {
     }
   }
 
+  /**
+   * Enrich a parsed title with metadata. Tries TMDB first (by IMDb id, then
+   * search) when a key is configured, then falls back to the free Cinemeta
+   * index (by id, then title) so artwork still appears without TMDB. Series
+   * matches are title-verified to avoid attaching the wrong show.
+   */
   private async enrich(
     parsed: Pick<ParsedMedia, 'title' | 'year'>,
     type: ContentType,
@@ -163,11 +198,17 @@ export class MetaService {
     return this.cinemetaByTitle(parsed.title, type, parsed.year);
   }
 
+  /** Prefer the enriched display name; title-case the parsed title otherwise. */
   private displayName(enriched: EnrichedMeta | null, parsedTitle: string, labelSuffix?: string): string {
     const base = enriched?.name?.trim() ? enriched.name : titleCase(parsedTitle);
     return labelSuffix ? `${base} · ${labelSuffix}` : base;
   }
 
+  /**
+   * Build a lightweight `MetaPreview` for catalog listings. Enriches the title,
+   * uses TMDB/Cinemeta artwork when available and the static placeholder
+   * otherwise, and sets `releaseInfo` to the enriched (or parsed) year.
+   */
   async preview(opts: {
     id: string;
     type: ContentType;
@@ -190,6 +231,11 @@ export class MetaService {
     };
   }
 
+  /**
+   * Build a full `Meta` (used on the detail page) by enriching like `preview`
+   * and attaching the given `videos` list (episodes for series, undefined for
+   * movies).
+   */
   async fullMeta(opts: {
     id: string;
     type: ContentType;

@@ -1,6 +1,11 @@
+// Stremio manifest construction. The manifest declares which resources the
+// addon serves, and is built per-provider (Real-Debrid vs TorBox) so each gets
+// its own addon id, name, and catalog set.
+
 import type { Config } from './types.js';
 import { DOWNLOADS_CATALOG, LIBRARY_CATALOG, SEARCH_CATALOG } from './constants.js';
 
+/** Shape of the manifest object Stremio fetches from `/manifest.json`. */
 export interface Manifest {
   id: string;
   version: string;
@@ -15,6 +20,11 @@ export interface Manifest {
   background: string;
 }
 
+/**
+ * Builds the Stremio manifest. The `provider` defaults to `realdebrid` and is
+ * derived from the request token at runtime; TorBox gets a distinct addon id,
+ * name, and catalog list (no downloads catalog, `TB`-prefixed names).
+ */
 export function buildManifest(config: Config, baseUrl: string, provider = 'realdebrid'): Manifest {
   const torbox = provider === 'torbox';
   const catalogs = [
@@ -34,6 +44,8 @@ export function buildManifest(config: Config, baseUrl: string, provider = 'reald
       name: 'RD Search',
       extra: [{ name: 'search', isRequired: true }],
     },
+  // Optional catalogs are off by default; the search and library toggles are
+  // independent so each can be enabled on its own.
   ].filter(c => c.id === SEARCH_CATALOG ? config.showSearchCatalogs : config.showLibraryCatalogs);
 
   return {

@@ -1,3 +1,6 @@
+// Tests MetaService.preview metadata selection (TMDB/Cinemeta) with a stubbed
+// global fetch. Ensures an incorrect index IMDb ID or unrelated search hit does
+// not relabel the requested title.
 import { afterEach, expect, it, vi } from 'vitest';
 import { MetaService } from '../src/meta/meta.js';
 import { createCaches } from '../src/services/cache.js';

@@ -1,3 +1,5 @@
+// Tests PirateBayProvider against stubbed apibay.org JSON, checking hash/seeder/
+// size/IMDb normalization and TV-category series detection.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { PirateBayProvider } from '../src/services/piratebay.js';
 

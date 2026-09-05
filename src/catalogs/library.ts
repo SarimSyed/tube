@@ -1,3 +1,6 @@
+// Stremio catalog handler for the user's Real-Debrid cloud: torrents and
+// downloads parsed into movie/series entries and enriched into meta cards.
+
 import type { RdDownload, RdTorrentSummary } from '../types.js';
 import type { CatalogResponse, ContentType, Meta } from '../stremio.js';
 import { parseFilename, guessType } from '../meta/parser.js';
@@ -7,6 +10,7 @@ import { downloadId, torrentId, episodeId, parseLibraryId } from '../id.js';
 import { mapLimit } from '../util.js';
 import { PAGE_SIZE } from '../constants.js';
 
+/** A torrent or hoster download normalized into one row for listing. */
 interface LibraryEntry {
   kind: 'torrent' | 'download';
   id: string;
@@ -15,6 +19,7 @@ interface LibraryEntry {
   added: string;
 }
 
+/** Build a compact "S01E02 1080p" suffix for series cards, or `undefined`. */
 function seriesLabel(season?: number, episode?: number, quality?: string): string | undefined {
   const parts: string[] = [];
   if (season !== undefined) parts.push(`S${String(season).padStart(2, '0')}`);
@@ -23,12 +28,18 @@ function seriesLabel(season?: number, episode?: number, quality?: string): strin
   return parts.length ? parts.join(' ') : undefined;
 }
 
+/**
+ * Serves the `rd-library` and `rd-downloads` catalogs. Filenames are parsed
+ * into movie/series entries, filtered to the requested `type`, paginated, and
+ * enriched into Stremio meta cards (TMDB/Cinemeta posters where available).
+ */
 export class LibraryCatalog {
   constructor(
     private rd: RdGateway,
     private metaService: MetaService,
   ) {}
 
+  /** Map the RD torrent list to `LibraryEntry`s. */
   private async torrents(): Promise<LibraryEntry[]> {
     const list = await this.rd.listTorrents();
     return list.map((t: RdTorrentSummary) => ({
@@ -40,6 +51,7 @@ export class LibraryCatalog {
     }));
   }
 
+  /** Map the RD hoster downloads list to `LibraryEntry`s. */
   private async downloads(): Promise<LibraryEntry[]> {
     const list = await this.rd.listDownloads();
     return list.map((d: RdDownload) => ({
@@ -50,6 +62,13 @@ export class LibraryCatalog {
     }));
   }
 
+  /**
+   * List one page of the library. `catalogId` selects downloads vs torrents;
+   * entries are parsed, filtered to `type` (and `search` when given), sorted
+   * newest-first, then paginated with `skip`/`PAGE_SIZE`. Each page entry is
+   * enriched into a `MetaPreview`; its id encodes whether it is a torrent or a
+   * download so `meta()` can resolve it later.
+   */
   async list(
     catalogId: string,
     type: ContentType,
@@ -75,6 +94,7 @@ export class LibraryCatalog {
 
     const page = entries.slice(skip, skip + PAGE_SIZE);
 
+    // Enrich the page with bounded concurrency to avoid hammering TMDB/Cinemeta.
     const metas = await mapLimit(page, 6, async (entry) => {
       const p = entry.parsed;
       const id = entry.kind === 'download' ? downloadId(entry.id) : torrentId(entry.id);
@@ -94,6 +114,12 @@ export class LibraryCatalog {
     return { metas };
   }
 
+  /**
+   * Build the full `Meta` for a library item (download or torrent). Downloads
+   * yield a single playable video; series torrents expand the files present in
+   * the torrent into per-episode `videos` (deduped by season:episode), falling
+   * back to one playable whole-torrent video when no episodes can be parsed.
+   */
   async meta(id: string, baseUrl: string): Promise<Meta | null> {
     const parsed = parseLibraryId(id);
     if (!parsed) return null;

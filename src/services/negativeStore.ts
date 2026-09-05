@@ -1,17 +1,26 @@
+// Disk-backed store of torrent hashes the debrid provider blocked as infringing.
+// It lives in the configured data dir and is loaded lazily, then re-saved
+// (debounced) as new blocked hashes are discovered during stream resolution.
 import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 /**
  * Persistent set of torrent hashes explicitly blocked by RD. Temporary errors
- * and uncached files must not be stored here.
+ * and uncached files must not be stored here — only genuine "infringing file"
+ * rejections, so the addon stops re-adding content RD will always refuse.
  */
 export class NegativeStore {
   private set = new Set<string>();
   private loaded = false;
   private saveTimer: NodeJS.Timeout | null = null;
 
+  /** @param file absolute path (in the data dir) of the backing JSON file. */
   constructor(private file: string) {}
 
+  /**
+   * Lazily reads the JSON array of hashes from disk (lowercasing each) on first
+   * use. Missing or corrupt files are treated as an empty store.
+   */
   private load(): void {
     if (this.loaded) return;
     this.loaded = true;
@@ -32,6 +41,10 @@ export class NegativeStore {
     return this.set;
   }
 
+  /**
+   * Debounced persist (5s) so bursty stream resolution triggers a single write;
+   * `unref` lets the process exit without waiting for the timer.
+   */
   saveSoon(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
@@ -41,6 +54,7 @@ export class NegativeStore {
     this.saveTimer.unref?.();
   }
 
+  /** Writes the sorted hash list atomically (tmp file + rename) to avoid a torn file. */
   async save(): Promise<void> {
     this.load();
     try {

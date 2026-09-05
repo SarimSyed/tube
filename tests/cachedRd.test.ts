@@ -1,3 +1,6 @@
+// Unit tests for CachedRealDebrid, the TTL-cached gateway wrapper. Uses a stub
+// RdGateway (no HTTP) to verify accounts sharing one cache store stay isolated
+// and concurrent uncached magnet submissions are de-duplicated.
 import { describe, expect, it, vi } from 'vitest';
 import { CachedRealDebrid } from '../src/services/cachedRd.js';
 import { createCaches } from '../src/services/cache.js';
@@ -43,6 +46,8 @@ function accountGateway(account: string): RdGateway {
   };
 }
 
+// getTorrentInfo caches only the "downloaded" state, so a later poll re-reads
+// an in-flight torrent instead of returning the stale pre-download status.
 describe('CachedRealDebrid torrent polling', () => {
   it.each(['waiting_files_selection', 'downloading'])(
     'observes a completed torrent on the next poll after %s',
@@ -108,6 +113,7 @@ describe('CachedRealDebrid account isolation with shared application caches', ()
 
 describe('CachedRealDebrid uncached submission safeguards', () => {
   const magnet = `magnet:?xt=urn:btih:${'a'.repeat(40)}`;
+  // cacheKey: account lets two wrappers for one account share the queue namespace.
   function gateway(account: string, addMagnet: RdGateway['addMagnet']): RdGateway {
     return { ...accountGateway(account), provider: 'torbox', cacheKey: account, allowUncached: true, addMagnet };
   }

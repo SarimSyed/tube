@@ -1,3 +1,6 @@
+// Stremio catalog handler for the advanced torrent search: groups index
+// results into one title card per match, with releases in the stream picker.
+
 import type { TorrentResult } from '../types.js';
 import type { CatalogResponse, ContentType, Meta } from '../stremio.js';
 import { MetaService } from '../meta/meta.js';
@@ -8,6 +11,11 @@ import type { RdGateway } from '../services/realdebrid.js';
 import type { CacheSet } from '../services/cache.js';
 import { PAGE_SIZE } from '../constants.js';
 
+/**
+ * Serves the `rd-search` catalog. One meta card is produced per distinct title
+ * (deduped via `sameTitle`), with the actual releases exposed later through the
+ * stream picker keyed by the `sr:` info-hash ids.
+ */
 export class SearchCatalog {
   constructor(
     private rd: RdGateway,
@@ -17,6 +25,12 @@ export class SearchCatalog {
     private includeUncached: boolean,
   ) {}
 
+  /**
+   * Run a torrent search for `query` and return a page of title cards. Results
+   * are gated on RD instant-availability (unless unavailable or
+   * `includeUncached` is set), cached copies are floated to the top with a
+   * stable sort, and duplicate titles are collapsed to one card.
+   */
   async catalog(type: ContentType, query: string | undefined, baseUrl: string): Promise<CatalogResponse> {
     if (!query || !query.trim()) return { metas: [] };
 
@@ -68,6 +82,13 @@ export class SearchCatalog {
     return { metas };
   }
 
+  /**
+   * Build the full `Meta` for a search result. The context embedded in the
+   * `sr:` id is used when available (so bookmarks survive a cache restart),
+   * falling back to the search cache. Series cards prefer canonical Cinemeta
+   * episodes via `seriesMeta`; otherwise same-title results are merged and
+   * sorted into episode/season-pack videos.
+   */
   async meta(id: string, baseUrl: string): Promise<Meta | null> {
     const hash = parseSearchId(id);
     if (!hash) return null;

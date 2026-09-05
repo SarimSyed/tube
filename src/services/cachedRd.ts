@@ -1,12 +1,18 @@
+// TTL-cached proxy over any `RdGateway` (RD or TorBox). Read-only calls that
+// return stable data (user, torrent list, info, downloads, unrestrict) are
+// cached; mutations (add/delete/select) invalidate the affected entries and
+// pass straight through to the underlying client.
 import type { RdDownload, RdTorrent, RdTorrentSummary } from '../types.js';
 import { EndpointDisabledError, type RdGateway } from './realdebrid.js';
 import type { CacheSet } from './cache.js';
 import { randomUUID } from 'node:crypto';
 
 /**
- * TTL-cached wrapper around the Real-Debrid client. Real-Debrid rate-limits
- * aggressively, so list/info/downloads responses are cached; instant
- * availability remembers when RD disabled the endpoint for this account.
+ * TTL-cached wrapper around an `RdGateway` (RD or TorBox). Real-Debrid
+ * rate-limits aggressively, so list/info/downloads responses are cached;
+ * in-progress torrent info is deliberately not cached (it changes frequently),
+ * and instant availability remembers when RD disabled the endpoint for this
+ * account.
  */
 export class CachedRealDebrid implements RdGateway {
   get provider() { return this.rd.provider; }
@@ -19,10 +25,12 @@ export class CachedRealDebrid implements RdGateway {
     this.cacheKey = rd.cacheKey ?? randomUUID();
   }
 
+  /** Namespace cache entries per account so different installs never share data. */
   private key(value: string): string {
     return `${this.cacheKey}:${value}`;
   }
 
+  /** Cached in `misc` — account identity is stable per token. */
   async getUser(): Promise<{ id: number | string; username: string }> {
     const key = this.key('user');
     const cached = this.caches.misc.get(key) as { id: number | string; username: string } | undefined;
@@ -32,6 +40,7 @@ export class CachedRealDebrid implements RdGateway {
     return user;
   }
 
+  /** Cached in `rdTorrents` — the cloud list is re-fetched only after a mutation. */
   async listTorrents(): Promise<RdTorrentSummary[]> {
     const cached = this.caches.rdTorrents.get(this.key('all')) as RdTorrentSummary[] | undefined;
     if (cached) return cached;
@@ -40,6 +49,10 @@ export class CachedRealDebrid implements RdGateway {
     return list;
   }
 
+  /**
+   * Cached in `rdTorrentInfo` only once fully downloaded; in-progress torrents
+   * are re-fetched because their status/progress change on every poll.
+   */
   async getTorrentInfo(id: string): Promise<RdTorrent> {
     const key = this.key(`info:${id}`);
     const cached = this.caches.rdTorrentInfo.get(key) as RdTorrent | undefined;
@@ -49,6 +62,7 @@ export class CachedRealDebrid implements RdGateway {
     return info;
   }
 
+  /** Cached in `rdDownloads` — hoster downloads change rarely. */
   async listDownloads(): Promise<RdDownload[]> {
     const cached = this.caches.rdDownloads.get(this.key('all')) as RdDownload[] | undefined;
     if (cached) return cached;
@@ -57,6 +71,11 @@ export class CachedRealDebrid implements RdGateway {
     return list;
   }
 
+  /**
+   * Passthrough mutation. Invalidates the cached torrent list (a new torrent
+   * appears there), and for uncached queueing shares the in-flight promise so
+   * concurrent identical submits don't add the same magnet twice.
+   */
   async addMagnet(magnet: string, cachedOnly?: boolean): Promise<{ id: string; uri: string }> {
     // A freshly added magnet changes the torrent list.
     this.caches.rdTorrents.delete(this.key('all'));
@@ -71,6 +90,7 @@ export class CachedRealDebrid implements RdGateway {
     return pending;
   }
 
+  /** Cached in `misc` — the direct URL for a given link is stable. */
   async unrestrict(link: string): Promise<{ download: string; filename: string }> {
     const key = this.key(`unrestrict:${link}`);
     const cached = this.caches.misc.get(key) as { download: string; filename: string } | undefined;
@@ -80,12 +100,14 @@ export class CachedRealDebrid implements RdGateway {
     return out;
   }
 
+  /** Passthrough mutation — drop the list and this torrent's info before deleting. */
   async deleteTorrent(torrentId: string): Promise<void> {
     this.caches.rdTorrents.delete(this.key('all'));
     this.caches.rdTorrentInfo.delete(this.key(`info:${torrentId}`));
     return this.rd.deleteTorrent(torrentId);
   }
 
+  /** Passthrough mutation — file selection changes the torrent's files. */
   async selectAllFiles(torrentId: string): Promise<void> {
     this.caches.rdTorrentInfo.delete(this.key(`info:${torrentId}`));
     return this.rd.selectAllFiles(torrentId);

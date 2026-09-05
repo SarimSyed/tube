@@ -1,3 +1,11 @@
+/**
+ * Turns a chosen torrent/library item into direct, playable stream URLs.
+ *
+ * `StreamResolver` dispatches on this addon's own ids (`rd:` library ids and
+ * `sr:` search ids) and delegates cache-availability probing to
+ * `findCachedStreams`. The resulting stream URLs point straight at the debrid
+ * provider; video never flows through the addon.
+ */
 import type { RdTorrent } from '../types.js';
 import type { Stream, StreamResponse } from '../stremio.js';
 import type { RdGateway } from '../services/realdebrid.js';
@@ -27,6 +35,7 @@ function basename(path: string): string {
   return path.split('/').pop() ?? path;
 }
 
+/** Build a Stremio stream object from a direct URL and parsed filename metadata. */
 function playableStream(url: string, filename: string, bytes: number, provider?: string, seeders?: number): Stream | null {
   let parsed: URL;
   try { parsed = new URL(url); } catch { return null; }
@@ -41,6 +50,7 @@ function playableStream(url: string, filename: string, bytes: number, provider?:
     description: [filename, formatBytes(bytes), seedersLine].filter(Boolean).join('\n'),
     behaviorHints: {
       bingeGroup: `tube-${label.toLowerCase()}`,
+      // Web players only handle direct https mp4; anything else needs a player.
       notWebReady: parsed.protocol !== 'https:' || !/\.mp4$/i.test(filename),
       filename,
       videoSize: bytes,
@@ -74,7 +84,13 @@ function resolveFiles(torrent: RdTorrent): Array<{ file: { id: number; path: str
   return result;
 }
 
-/** Build playable streams from a downloaded RD torrent (optionally one episode). */
+/**
+ * Build playable streams from a downloaded torrent (optionally one episode).
+ * Maps each download link to its source file (filename match preferred,
+ * positional fallback), filters to video files, restricts each via
+ * `unrestrict` to get the direct URL, and records the hash in `negatives` when
+ * a file is reported blocked/infringing.
+ */
 export async function torrentStreams(
   rd: RdGateway,
   torrent: RdTorrent,
@@ -113,12 +129,23 @@ export async function torrentStreams(
   return streams;
 }
 
+/** Log a not-ready reason and return an empty stream list. */
 function notReadyStream(message: string): StreamResponse {
   console.warn(`[stream] ${message}`);
   return { streams: [] };
 }
 
+/**
+ * Resolves this addon's own stream ids into direct URLs. Library ids (`rd:…`)
+ * resolve from the user's cloud (torrents or web downloads); search ids
+ * (`sr:…`) resolve via bounded cache-probing against the debrid provider.
+ */
 export class StreamResolver {
+  /**
+   * @param rd Debrid gateway (Real-Debrid or TorBox).
+   * @param deps Optional services — search + caches + negatives enable the
+   *   search-id probe path (library ids only need `rd`).
+   */
   constructor(
     private rd: RdGateway,
     private deps: {
@@ -129,6 +156,10 @@ export class StreamResolver {
     } = {},
   ) {}
 
+  /**
+   * Dispatch on id shape: `rd:` library ids resolve from the cloud, `sr:`
+   * search ids resolve via cache-probing. Anything else yields no streams.
+   */
   async resolve(id: string): Promise<StreamResponse> {
     const libraryId = parseLibraryId(id);
     if (libraryId) return this.resolveLibrary(libraryId);
@@ -139,6 +170,11 @@ export class StreamResolver {
     return { streams: [] };
   }
 
+  /**
+   * Resolve a cloud library item. Web downloads stream directly; torrents must
+   * be `downloaded` first. Episode ids narrow the result to that
+   * season/episode.
+   */
   private async resolveLibrary(libraryId: ReturnType<typeof parseLibraryId>): Promise<StreamResponse> {
     if (!libraryId) return { streams: [] };
 
@@ -161,6 +197,11 @@ export class StreamResolver {
     return { streams: streams.length ? streams : notReadyStream('No playable video file in this torrent').streams };
   }
 
+  /**
+   * Resolve a search id. When the clicked result's context is known, probe its
+   * title's cached copies (clicked one first) so a blocked/uncached pick falls
+   * through to another; legacy ids probe just the bare hash.
+   */
   private async resolveSearch(hash: string, context: TorrentResult | null): Promise<StreamResponse> {
     const result = context ?? this.deps.caches?.search.get(`result:${hash}`) as TorrentResult | undefined;
 

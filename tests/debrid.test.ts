@@ -1,3 +1,6 @@
+// Tests provider credential routing: createDebridClient (torbox: /
+// torbox-download: / plain RD), the preferredLanguages suffix, and how the
+// manifest differs between Real-Debrid and TorBox installs.
 import { afterEach, expect, it, vi } from 'vitest';
 import { createDebridClient, preferredLanguages } from '../src/services/debrid.js';
 import { buildManifest } from '../src/manifest.js';

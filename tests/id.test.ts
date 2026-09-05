@@ -1,3 +1,5 @@
+// Tests the addon's self-defined ID codec (rd:/rd:dl:/rd:s:e and sr: hashes).
+// Also checks the search-context suffix round-trips and rejects malformed ids.
 import { describe, it, expect } from 'vitest';
 import { torrentId, downloadId, episodeId, searchId, parseLibraryId, parseSearchId } from '../src/id.js';
 

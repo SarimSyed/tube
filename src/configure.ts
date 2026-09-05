@@ -1,3 +1,12 @@
+// Renders the `/configure` setup page. It is a static HTML string with inline
+// JS that builds the Stremio install URL client-side, embedding the user's
+// debrid token (and any `~lang` preferences) into the addon path.
+
+/**
+ * Returns the full configure page HTML. `baseUrl` is injected as JSON into the
+ * inline script so the client can build a self-referential install link from
+ * the same origin the page was served from.
+ */
 export function renderConfigurePage(baseUrl: string): string {
   return `<!doctype html>
 <html lang="en">

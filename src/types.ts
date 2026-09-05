@@ -1,5 +1,6 @@
 // Shared domain types for the Tube addon.
 
+/** Movie or series content type. */
 export type ContentType = 'movie' | 'series';
 
 /** A torrent as returned by Real-Debrid `GET /torrents` (list) — lighter shape. */
@@ -94,6 +95,7 @@ export interface EnrichedMeta {
   imdbId?: string;
 }
 
+/** A torrent search index queried during search. */
 export interface TorrentProvider {
   name: string;
   search(query: string): Promise<TorrentResult[]>;
@@ -101,27 +103,44 @@ export interface TorrentProvider {
   checkCached?(hashes: string[]): Promise<Set<string>>;
 }
 
+/** Runtime configuration, loaded from environment variables by `loadConfig`. */
 export interface Config {
+  /** HTTP port the addon listens on. */
   port: number;
   /** Override the Real-Debrid API base URL (for tests/mocks). */
   rdApiBase: string | null;
+  /** Override the TorBox API base URL (for tests/mocks). */
   torboxApiBase: string | null;
   /** Writable directory for persisted state (negative cache). */
   dataDir: string;
+  /** Public base URL override; when empty, derived from the incoming request. */
   baseUrl: string;
+  /** Fallback Real-Debrid token used when none is embedded in the request. */
   rdApiKey: string | null;
+  /** TMDB API key used to enrich metas; null disables enrichment. */
   tmdbApiKey: string | null;
+  /** Base URL of the Zilean search index; null disables Zilean. */
   zileanUrl: string | null;
   /** X-API-KEY for Zilean's authenticated endpoints (checkcached). */
   zileanApiKey: string | null;
+  /** Base URL of the Torznab search index; null disables Torznab. */
   torznabUrl: string | null;
+  /** API key for the Torznab index. */
   torznabApiKey: string | null;
+  /** TTL in seconds for in-memory response caches. */
   cacheTtlSeconds: number;
+  /** Whether to include search results not yet cached on the debrid. */
   includeUncached: boolean;
+  /** Whether to expose the library/downloads cloud catalogs. */
   showLibraryCatalogs: boolean;
+  /** Whether to expose the search catalog. */
   showSearchCatalogs: boolean;
+  /** Stremio addon id used in the manifest. */
   addonId: string;
+  /** Addon display name used in the manifest (Real-Debrid variant). */
   addonName: string;
+  /** Addon description used in the manifest. */
   addonDescription: string;
+  /** Addon version reported in the manifest. */
   version: string;
 }

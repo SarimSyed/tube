@@ -1,8 +1,14 @@
+/**
+ * SearchService: orchestrates the TorrentProviders. Fans a query out to every
+ * source, tolerates partial failures, dedupes by info_hash, filters to the
+ * requested title/type, and re-ranks by query relevance before caching.
+ */
 import type { TorrentProvider, TorrentResult } from '../types.js';
 import type { ContentType } from '../stremio.js';
 import type { CacheSet } from './cache.js';
 import { normalizeTitle } from '../meta/parser.js';
 
+/** Split + normalize a title into its word tokens for fuzzy title matching. */
 export function normTokens(text: string): Set<string> {
   return new Set(
     normalizeTitle(text)
@@ -11,6 +17,11 @@ export function normTokens(text: string): Set<string> {
   );
 }
 
+/**
+ * Whether two results refer to the same title. IMDb ids win when both are
+ * present; otherwise normalized title + year must match, and movie/series must
+ * agree.
+ */
 export function sameTitle(a: TorrentResult, b: TorrentResult): boolean {
   if (a.isSeries !== b.isSeries) return false;
   if (a.imdbId && b.imdbId) return a.imdbId === b.imdbId;
@@ -33,12 +44,18 @@ export function rankByRelevance(result: TorrentResult, query: string): number {
   return coverage * 2 + precision;
 }
 
+/**
+ * Multi-source search. Combines provider results, dedupes by info_hash, filters
+ * by query title + requested type, and re-ranks by relevance. Results are
+ * cached under `type:query` in `caches.search`.
+ */
 export class SearchService {
   constructor(
     private providers: TorrentProvider[],
     private caches: CacheSet,
   ) {}
 
+  /** Keep one result per info_hash, preferring the copy that carries an IMDb id. */
   private dedupe(results: TorrentResult[]): TorrentResult[] {
     const seen = new Map<string, TorrentResult>();
     for (const r of results) {
@@ -68,6 +85,12 @@ export class SearchService {
     return out;
   }
 
+  /**
+   * Search all providers and shape the combined results. Steps: trim/empty
+   * guard → cache lookup → fan out via `Promise.allSettled` (partial failures
+   * ignored) → dedupe → title-token filter (unless `skipTitleFilter`) →
+   * series/movie filter → sort by query relevance → cache + return.
+   */
   async search(
     query: string,
     type: ContentType,
@@ -89,8 +112,11 @@ export class SearchService {
     }
 
     const queryTokens = [...normTokens(normalized)];
+    // Keep only results whose title covers every query token (prefix match, a
+    // loose word-boundary check), then restrict to the requested type.
     const deduped = this.dedupe(combined).filter(r => {
       if (opts.skipTitleFilter) return true;
+      // Include the year so a "Matrix 1999" query can also match on it.
       const titleTokens = [...normTokens(`${r.title} ${r.year ?? ''}`)];
       return queryTokens.every(q => titleTokens.some(t => t.startsWith(q)));
     }).filter((r) =>

@@ -1,3 +1,5 @@
+// Tests SearchService relevance ranking and title filtering (rankByRelevance plus
+// token coverage) with fake providers and no HTTP.
 import { describe, it, expect, vi } from 'vitest';
 import { SearchService, rankByRelevance } from '../src/services/search.js';
 import { createCaches } from '../src/services/cache.js';

@@ -1,3 +1,6 @@
+// Tests TtStreamProvider, which resolves Cinemeta tt ids to streams by matching
+// cloud torrent titles (bigram similarity catches UK/US spelling) and topping up
+// from the index. Uses stubbed Cinemeta fetch and stub RdGateway objects.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TtStreamProvider } from '../src/stream/tt.js';
 import { createCaches } from '../src/services/cache.js';

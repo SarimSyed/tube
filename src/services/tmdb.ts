@@ -1,9 +1,16 @@
+/**
+ * TMDB API client for enriching metas with canonical names, posters, and
+ * backdrops. Stateless: MetaService caches its results in `caches.tmdb`, and
+ * every lookup returns null rather than throwing, so a missing key or a TMDB
+ * outage never breaks metadata/stream delivery.
+ */
 import type { EnrichedMeta } from '../types.js';
 import { normalizeTitle } from '../meta/parser.js';
 
-const BASE = 'https://api.themoviedb.org/3';
-const IMAGE = 'https://image.tmdb.org/t/p';
+const BASE = 'https://api.themoviedb.org/3'; // REST API root.
+const IMAGE = 'https://image.tmdb.org/t/p'; // Image CDN; append `/{size}{path}`.
 
+/** A TMDB search/find hit; movie and tv fields are mutually exclusive. */
 interface TmdbResult {
   id: number;
   title?: string;
@@ -15,14 +22,24 @@ interface TmdbResult {
   first_air_date?: string;
 }
 
+/** Build an image CDN URL, or null when no poster/backdrop path is present. */
 function imageUrl(path: string | null | undefined, size: string): string | null {
   if (!path) return null;
   return `${IMAGE}/${size}${path}`;
 }
 
+/**
+ * Thin TMDB client. Endpoints used: `GET /find/{imdbId}` (with
+ * `external_source=imdb_id`), `GET /search/movie`, and `GET /search/tv`.
+ * Results are cached upstream by MetaService, not here.
+ */
 export class TmdbClient {
   constructor(private apiKey: string) {}
 
+  /**
+   * Resolve an IMDb id via `GET /find/{imdbId}`. Prefers the movie result and
+   * falls back to tv; returns null on any error or when neither list has a hit.
+   */
   async findByIdentifier(imdbId: string): Promise<EnrichedMeta | null> {
     const res = await fetch(
       `${BASE}/find/${imdbId}?external_source=imdb_id&api_key=${this.apiKey}`,
@@ -38,6 +55,13 @@ export class TmdbClient {
     return this.toMeta(hit, data.movie_results?.[0] ? 'movie' : 'series');
   }
 
+  /**
+   * Search by title via `GET /search/movie` and/or `/search/tv`. Without a
+   * `type` it tries movie then tv; a `year` maps to `year` (movies) or
+   * `first_air_date_year` (series). Only exact normalized-title matches are
+   * accepted, so a wrong-year or same-name duplicate is rejected; null when
+   * nothing fits.
+   */
   async search(title: string, year?: number, type?: 'movie' | 'series'): Promise<EnrichedMeta | null> {
     const targets: Array<{ path: string; kind: 'movie' | 'series' }> =
       type === 'series'
@@ -70,6 +94,7 @@ export class TmdbClient {
     return null;
   }
 
+  /** Map a TMDB hit to {@link EnrichedMeta}, deriving year from the type's date field. */
   private toMeta(hit: TmdbResult, kind: 'movie' | 'series'): EnrichedMeta {
     const year = Number.parseInt(
       (kind === 'movie' ? hit.release_date : hit.first_air_date)?.slice(0, 4) ?? '',

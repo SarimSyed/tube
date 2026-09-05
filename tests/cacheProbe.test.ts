@@ -1,3 +1,7 @@
+// Tests findCachedStreams, which adds index candidates to the debrid and polls
+// until each resolves as cached ("downloaded") or is deleted. Uses a fake
+// RdGateway plus vitest fake timers to cover both RD probing and the TorBox
+// cache/download paths without network calls.
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { findCachedStreams } from '../src/stream/cacheProbe.js';
 import type { RdGateway } from '../src/services/realdebrid.js';

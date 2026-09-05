@@ -1,3 +1,11 @@
+/**
+ * Standard Cinemeta title/episode stream resolution.
+ *
+ * Given a Cinemeta `tt…` id (optionally `tt…:season:episode`), finds matching
+ * releases already in the user's debrid cloud, then tops up from the torrent
+ * index via bounded cache-probing. Video never passes through the addon — the
+ * returned stream URLs point straight at the debrid provider.
+ */
 import type { RdGateway } from '../services/realdebrid.js';
 import type { CacheSet } from '../services/cache.js';
 import type { SearchService } from '../services/search.js';
@@ -14,10 +22,12 @@ interface CinemetaMeta {
   meta: { id: string; type: string; name?: string; year?: string | number; releaseInfo?: string };
 }
 
+/** Lowercase and collapse non-alphanumerics so titles compare on words only. */
 function cleanTitle(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+/** Like {@link cleanTitle}, then drops a leading "the/a/an" article. */
 function normTitle(title: string): string {
   const cleaned = cleanTitle(title);
   return cleaned.replace(/^(the|a|an)\s+/, '');
@@ -42,6 +52,7 @@ function bigramSimilarity(a: string, b: string): number {
   return (2 * inter) / (ga.size + gb.size);
 }
 
+/** Bigram similarity at or above this is treated as the same title. */
 const TITLE_SIMILARITY_THRESHOLD = 0.9;
 /** Aim to return up to this many total streams (cloud + index). */
 const STREAM_TARGET = 30;
@@ -51,12 +62,27 @@ interface YearOk {
   metaYear?: number;
 }
 
+/** True when either year is unknown or they are equal — a missing year never blocks a match. */
 function yearsMatch({ torrentYear, metaYear }: YearOk): boolean {
   if (torrentYear === undefined || metaYear === undefined) return true;
   return torrentYear === metaYear;
 }
 
+/**
+ * The "standard title/episode" stream provider. Resolves a Cinemeta `tt…` id
+ * by matching the title against releases already in the user's debrid cloud
+ * (instant, no probing), then topping up from torrent-index results via
+ * cache-probing. Emits one `Stream` per playable file — cloud results first,
+ * deduped by URL, and capped at `STREAM_TARGET`.
+ */
 export class TtStreamProvider {
+  /**
+   * @param rd Debrid gateway (Real-Debrid or TorBox) for cloud queries and probing.
+   * @param caches TTL caches — `tmdb` for Cinemeta metadata, `misc` for the negative-hash set.
+   * @param search Torrent-index search; when null, only cloud results are returned.
+   * @param negativesStore Persistent blocked-hash set; when null, negatives fall back to the `misc` cache.
+   * @param preferredLanguages Languages floated to the top and searched for explicitly.
+   */
   constructor(
     private rd: RdGateway,
     private caches: CacheSet,
@@ -65,6 +91,7 @@ export class TtStreamProvider {
     private preferredLanguages: string[] = [],
   ) {}
 
+  /** Fetch this id's name/year from Cinemeta, cached in the `tmdb` TTL cache. */
   private async cinemetaMeta(type: ContentType, ttId: string): Promise<{ name: string; year?: number } | null> {
     const cacheKey = `cinemeta:${ttId}`;
     const cached = this.caches.tmdb.get(cacheKey) as { name: string; year?: number } | undefined;
@@ -87,8 +114,10 @@ export class TtStreamProvider {
   }
 
   /**
-   * Streams for a normal Cinemeta id (`tt…` or `tt…:season:episode`) found by
-   * matching the title against torrents already in the user's RD cloud.
+   * Streams for a normal Cinemeta id (`tt…` or `tt…:season:episode`), matched
+   * first against torrents already in the user's RD cloud (instant, since only
+   * downloaded torrents have playable links), then topped up from the index.
+   * Results are deduped by URL and capped at `STREAM_TARGET`.
    */
   async resolve(type: ContentType, id: string): Promise<StreamResponse> {
     const parts = id.split(':');
@@ -167,6 +196,11 @@ export class TtStreamProvider {
     return { streams: deduped.slice(0, STREAM_TARGET) };
   }
 
+  /**
+   * Rank an index result for this request: exact year match (+4), series/movie
+   * kind agreement (+1), matching season/episode (+2 each, −1 for a known
+   * mismatch), plus size/TB as a tie-break towards larger releases.
+   */
   private scoreCandidate(r: TorrentResult, type: ContentType, metaYear: number | undefined, season?: number, episode?: number): number {
     let score = r.year === metaYear ? 4 : 0;
     if (r.isSeries === (type === 'series')) score += 1;
@@ -180,6 +214,14 @@ export class TtStreamProvider {
     return score;
   }
 
+  /**
+   * Search the index for `name`, then probe the ranked candidates against the
+   * debrid and return the cached ones as streams. Also searches each preferred
+   * language explicitly for dubbed releases a plain title search misses,
+   * prefilters to index-known-cached hashes when available (avoiding
+   * add-throttling), and persists any newly blocked hashes via the negatives
+   * store.
+   */
   private async searchAndAdd(
     type: ContentType,
     name: string,

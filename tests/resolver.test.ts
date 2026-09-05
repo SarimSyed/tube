@@ -1,3 +1,6 @@
+// Tests StreamResolver, which turns rd:/sr: ids into playable Stremio streams.
+// Uses stub RdGateway objects to cover library torrents, search-hash probing,
+// unrestricted-URL validation, and TorBox cache hits.
 import { describe, it, expect, vi } from 'vitest';
 import { StreamResolver } from '../src/stream/resolver.js';
 import { SearchService } from '../src/services/search.js';

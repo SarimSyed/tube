@@ -1,3 +1,5 @@
+// Tests NegativeStore persistence against a JSON file in a temp directory,
+// including reloading hashes in a fresh instance and starting empty when absent.
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

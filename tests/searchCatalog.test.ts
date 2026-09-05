@@ -1,3 +1,5 @@
+// Tests SearchCatalog: grouping index results into title cards, series episode
+// videos, and resolving streams after cache expiry using a fresh cache set.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SearchCatalog } from '../src/catalogs/search.js';
 import { SearchService } from '../src/services/search.js';

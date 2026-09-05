@@ -1,3 +1,6 @@
+// Environment loading: a small `.env` loader plus `loadConfig`, which assembles
+// the typed runtime `Config` used across the addon.
+
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -28,18 +31,21 @@ function loadDotEnv(): void {
 
 loadDotEnv();
 
+/** Reads an env var, treating empty string as unset (`null`). */
 function env(name: string): string | null {
   const value = process.env[name];
   if (value === undefined || value === '') return null;
   return value;
 }
 
+/** Parses an env var as a boolean, accepting `1` / `true` / `yes` (case-insensitive). */
 function envBool(name: string, fallback: boolean): boolean {
   const value = env(name);
   if (value === null) return fallback;
   return value === '1' || value.toLowerCase() === 'true' || value.toLowerCase() === 'yes';
 }
 
+/** Parses an env var as an integer, falling back when absent or non-numeric. */
 function envInt(name: string, fallback: number): number {
   const value = env(name);
   if (value === null) return fallback;
@@ -47,6 +53,10 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+/**
+ * Assembles the typed runtime config from environment variables, applying
+ * defaults for every optional setting. Called once at startup by `src/index.ts`.
+ */
 export function loadConfig(): Config {
   return {
     port: envInt('PORT', 7000),

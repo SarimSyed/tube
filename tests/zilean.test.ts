@@ -1,3 +1,5 @@
+// Tests ZileanProvider (DMM search + checkcached) with a stubbed fetch, covering
+// result normalization, the X-API-Key header, and failure fallbacks.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ZileanProvider } from '../src/services/zilean.js';
 

@@ -1,13 +1,26 @@
+// Filename → ParsedMedia heuristic parser for torrent/release names.
+// Tolerates the many release naming conventions seen on debrid/torrent indexes.
+
 import type { ParsedMedia } from '../types.js';
 
+/**
+ * Normalize a title into a stable comparison key: strip diacritics, lowercase,
+ * and collapse runs of non-letter/number characters to single spaces.
+ */
 export function normalizeTitle(title: string): string {
   return title.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 }
 
+// Extension classifiers. Subtitle sidecars are excluded so a torrent's
+// subtitle files are never surfaced as playable videos (see `isVideoFile`).
 const VIDEO_EXT = /\.(mkv|mp4|avi|mov|wmv|flv|webm|m4v|ts|m2ts|mpg|mpeg)$/i;
 const SUB_EXT = /\.(srt|ass|ssa|sub|vtt|idx)$/i;
 
-/** Known noise tokens to strip from titles. */
+/**
+ * Known noise tokens to strip from titles. Matched as whole tokens (after
+ * bracket removal) against a case/separator-insensitive key, so "BluRay" and
+ * "blu-ray" both drop out.
+ */
 const NOISE = new Set([
   '4320p', '2160p', '1440p', '1080p', '720p', '480p', '360p', '4k', '8k', 'uhd', 'hd', 'hdr', 'hdr10',
   'hdr10plus', 'dv', 'dovi', 'dolby', 'vision', 'bluray', 'blu-ray', 'web', 'web-dl',
@@ -21,7 +34,11 @@ const NOISE = new Set([
   'screener', 'webcap', 'rarbg', 'yts', 'yify',
 ]);
 
-/** Audio-language tags commonly found in release names. */
+/**
+ * Audio-language tags commonly found in release names, matched as whole words
+ * against the raw filename. Full words (not bare two-letter codes) are used so
+ * short codes like "en" don't false-positive inside ordinary English words.
+ */
 const LANGUAGE_DETECT: Array<[RegExp, string]> = [
   [/\b(?:english|eng)\b/i, 'English'],
   [/\b(?:french|fre|fra)\b/i, 'French'],
@@ -92,6 +109,8 @@ export function normalizeLanguage(input: string): string {
   return LANGUAGE_ALIASES[input.trim().toLowerCase()] ?? input.trim().toLowerCase();
 }
 
+// Marker patterns used to classify a filename. Word boundaries keep short
+// markers (`S01`, `E01`, years) from matching inside longer tokens.
 const YEAR_RE = /\b(19\d{2}|20\d{2})\b/;
 const SEASON_EPISODE_RE = /[sS](\d{1,2})[eE](\d{1,3})/;
 const SEASON_ONLY_RE = /[sS](\d{1,2})\b/;
@@ -113,10 +132,15 @@ function removeBracketed(s: string): string {
   return s.replace(/[[({][^\])}]*[\])}]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/** True when `path` names a playable video file (not a subtitle sidecar or sample). */
 export function isVideoFile(path: string): boolean {
   return VIDEO_EXT.test(path) && !SUB_EXT.test(path) && !/sample/i.test(path);
 }
 
+/**
+ * Classify a filename as `series` when any season marker is present (`S01E01`,
+ * "Season 1", or a bare `S01`); otherwise `movie`.
+ */
 export function guessType(filename: string): 'movie' | 'series' {
   return SEASON_EPISODE_RE.test(filename) ||
     SEASON_WORD_RE.test(filename) ||
@@ -128,9 +152,22 @@ export function guessType(filename: string): 'movie' | 'series' {
 /**
  * Parse a release filename into structured media info. Best-effort and
  * tolerant of the wide variety of release naming conventions.
+ *
+ * Pipeline: language tags are detected from the raw name first, then the
+ * extension is stripped and separators humanized before year, quality and
+ * season/episode markers are matched in order. The release group is taken as
+ * the token after the last hyphen, and remaining bracketed/noise tokens are
+ * dropped to leave the cleaned title. For series, the title is everything
+ * before the season/episode marker so per-episode names don't pollute it.
+ *
+ * Known limitations: a bare `S01` is treated as a series pack (no episode);
+ * a release group is only detected when a `-` separator exists; and titles
+ * with no recognizable markers fall back to the humanized filename.
  */
 export function parseFilename(filename: string): ParsedMedia {
   const raw = filename;
+  // Detect languages from the raw name first, before extension stripping and
+  // token noise removal, so language tags in the release tail are still seen.
   const languages: string[] = [];
   for (const [re, label] of LANGUAGE_DETECT) {
     if (re.test(raw) && !languages.includes(label)) languages.push(label);

@@ -1,3 +1,6 @@
+// Tests series metadata from LibraryCatalog and SearchCatalog (TorBox cloud and
+// search cards), asserting Stremio-parseable episode dates and season-pack
+// episode discovery. Uses a stubbed fetch for TorBox/Cinemeta responses.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LibraryCatalog } from '../src/catalogs/library.js';
 import { SearchCatalog } from '../src/catalogs/search.js';

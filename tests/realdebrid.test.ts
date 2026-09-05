@@ -1,3 +1,6 @@
+// Tests RealDebridClient HTTP behavior with a stubbed global fetch: bearer auth,
+// 401 -> InvalidTokenError mapping, batched instant availability, and the
+// form-encoded addMagnet body.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RealDebridClient, InvalidTokenError } from '../src/services/realdebrid.js';
 

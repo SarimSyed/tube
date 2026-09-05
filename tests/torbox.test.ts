@@ -1,3 +1,6 @@
+// Tests TorBoxClient and its StreamResolver integration against stubbed API
+// responses: torrent mapping, cached-only adds, batched checkcached, and CDN URL
+// resolution without leaking the token.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { TorBoxClient } from '../src/services/torbox.js';
 import { StreamResolver } from '../src/stream/resolver.js';
@@ -111,7 +114,7 @@ describe('TorBoxClient', () => {
   });
 
   it.each([401, 429])('preserves HTTP %s without leaking response details or credentials', async (status) => {
-    fetchMock.mockResolvedValueOnce(response(null, status, false, `Failed token ${token}`));
+    fetchMock.mockResolvedValue(response(null, status, false, `Failed token ${token}`));
     const error = await new TorBoxClient(token).listTorrents().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(Error);
     expect(error).toMatchObject({ status });
@@ -148,4 +151,22 @@ it('asks TorBox to add only cached torrents to avoid queueing an unexpected down
     await new TorBoxClient(token).addMagnet(`magnet:?xt=urn:btih:${hash}`);
     expect(fetchMock.mock.calls[0][1].body.get('add_only_if_cached')).toBe('true');
   } finally { vi.unstubAllGlobals(); }
+});
+
+describe('TorBoxClient rate-limit retry', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+  beforeEach(() => { fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock); });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('retries a 429 response with backoff and then succeeds', async () => {
+    const magnet = `magnet:?xt=urn:btih:${'a'.repeat(40)}`;
+    fetchMock
+      .mockResolvedValueOnce(response({}, 429, false, 'RATE_LIMITED'))
+      .mockResolvedValueOnce(response({}, 429, false, 'RATE_LIMITED'))
+      .mockResolvedValueOnce(response({ torrent_id: 42 }));
+    const client = new TorBoxClient('tok', undefined, true);
+    const res = await client.addMagnet(magnet, false);
+    expect(res.id).toBe('42');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
 });
