@@ -2,6 +2,18 @@
 // JS that builds the Stremio install URL client-side, embedding the user's
 // debrid token (and any `~lang` preferences) into the addon path.
 
+import { PREFERRED_LANGUAGE_KEYS } from './meta/parser.js';
+
+/** Display label for a canonical language key (e.g. "hindi" -> "Hindi"). */
+function languageLabel(key: string): string {
+  return key.charAt(0).toUpperCase() + key.slice(1);
+}
+
+/** Builds the `<option>` list for the language picker from the canonical keys. */
+function languageOptions(): string {
+  return PREFERRED_LANGUAGE_KEYS.map((k) => `<option value="${k}">${languageLabel(k)}</option>`).join('');
+}
+
 /**
  * Returns the full configure page HTML. `baseUrl` is injected as JSON into the
  * inline script so the client can build a self-referential install link from
@@ -29,6 +41,14 @@ export function renderConfigurePage(baseUrl: string): string {
   .result a.install { background:#5b6cff; color:white; text-align:center; font-weight:700; }
   .hint { font-size:12px; color:#6f7a95; margin-top:6px; }
   .error { color:#ff7b7b; font-size:13px; margin-top:10px; display:none; }
+  .lang-row { display:flex; gap:8px; align-items:stretch; }
+  .lang-row select { flex:1; }
+  .lang-row button { width:auto; margin-top:0; padding:12px 18px; flex-shrink:0; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  .chips:empty { display:none; }
+  .chip { display:inline-flex; align-items:center; gap:8px; background:#0d1220; border:1px solid #303a55; border-radius:999px; padding:6px 8px 6px 14px; font-size:13px; color:#c9d2e8; }
+  .chip button { width:auto; margin:0; padding:0 6px; background:none; border:0; color:#6f7a95; font-size:16px; line-height:1; cursor:pointer; border-radius:50%; }
+  .chip button:hover { color:#ff7b7b; }
 </style>
 </head>
 <body>
@@ -48,8 +68,12 @@ export function renderConfigurePage(baseUrl: string): string {
     <p class="hint">Opening a movie or episode can start one torrent download in your TorBox account. Tube prefers cached streams and shows a dashboard link while downloading. Reopen the title after it finishes.</p>
   </div>
   <label for="langs">Preferred languages (optional)</label>
-  <input id="langs" type="text" autocomplete="off" placeholder="english, french, urdu, german, spanish, hindi" />
-  <p class="hint">Comma-separated (names or codes, e.g. english, french, urdu, german / deutch / deu, spanish, hindi). These languages float to the top of the stream list when available. Leave blank to prefer Hindi / Dual / Multi.</p>
+  <div class="lang-row">
+    <select id="langs"><option value="" selected>Choose a language…</option>${languageOptions()}</select>
+    <button type="button" id="lang-add">Add</button>
+  </div>
+  <div class="chips" id="lang-chips"></div>
+  <p class="hint">Pick the languages that should surface first in your stream list; first added has highest priority. Leave empty to prefer Hindi / Dual / Multi.</p>
   <button id="go">Generate install link</button>
   <div class="error" id="err" role="alert">Please paste your provider's API token.</div>
 
@@ -66,19 +90,42 @@ export function renderConfigurePage(baseUrl: string): string {
   const token = document.getElementById('token');
   const provider = document.getElementById('provider');
   const uncached = document.getElementById('uncached');
-  const langsInput = document.getElementById('langs');
   const err = document.getElementById('err');
   const result = document.getElementById('result');
   const install = document.getElementById('install');
   const url = document.getElementById('url');
+  const langs = document.getElementById('langs');
+  const langAdd = document.getElementById('lang-add');
+  const langChips = document.getElementById('lang-chips');
+  const chosen = []; // canonical language keys, in priority order (first = top)
+
+  function renderChips() {
+    langChips.innerHTML = '';
+    chosen.forEach((lang) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = lang.charAt(0).toUpperCase() + lang.slice(1);
+      const x = document.createElement('button');
+      x.type = 'button';
+      x.setAttribute('aria-label', 'Remove ' + lang);
+      x.textContent = '×';
+      x.addEventListener('click', () => {
+        const i = chosen.indexOf(lang);
+        if (i !== -1) chosen.splice(i, 1);
+        renderChips();
+        result.style.display = 'none';
+      });
+      chip.appendChild(x);
+      langChips.appendChild(chip);
+    });
+  }
 
   function generate() {
     const t = token.value.trim();
     if (!t) { err.style.display = 'block'; result.style.display = 'none'; return; }
     err.style.display = 'none';
-    const langs = langsInput.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const credential = provider.value === 'torbox' ? (uncached.checked ? 'torbox-download:' : 'torbox:') + t : t;
-    const withLangs = credential + (langs.length ? '~' + langs.join(',') : '');
+    const withLangs = credential + (chosen.length ? '~' + chosen.join(',') : '');
     const manifest = base + '/' + encodeURIComponent(withLangs) + '/manifest.json';
     install.href = 'stremio://' + manifest.replace(/^https?:\\/\\//, '');
     url.href = manifest;
@@ -93,6 +140,15 @@ export function renderConfigurePage(baseUrl: string): string {
   });
   uncached.addEventListener('change', () => { result.style.display = 'none'; });
   token.addEventListener('keydown', (e) => { if (e.key === 'Enter') generate(); });
+  langAdd.addEventListener('click', () => {
+    const v = langs.value;
+    if (v && !chosen.includes(v)) {
+      chosen.push(v);
+      renderChips();
+      result.style.display = 'none';
+    }
+    langs.value = '';
+  });
 </script>
 </body>
 </html>`;

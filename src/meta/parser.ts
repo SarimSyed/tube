@@ -109,6 +109,13 @@ export function normalizeLanguage(input: string): string {
   return LANGUAGE_ALIASES[input.trim().toLowerCase()] ?? input.trim().toLowerCase();
 }
 
+/**
+ * Canonical preferred-language keys offered on the configure page's picker,
+ * derived from the alias table so the dropdown can never drift from what the
+ * stream ranking actually understands.
+ */
+export const PREFERRED_LANGUAGE_KEYS: string[] = [...new Set(Object.values(LANGUAGE_ALIASES))].sort();
+
 // Marker patterns used to classify a filename. Word boundaries keep short
 // markers (`S01`, `E01`, years) from matching inside longer tokens.
 const YEAR_RE = /\b(19\d{2}|20\d{2})\b/;
