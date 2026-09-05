@@ -17,6 +17,10 @@ services:
       INCLUDE_UNCACHED: "${INCLUDE_UNCACHED:-false}"
       SHOW_LIBRARY_CATALOGS: "${SHOW_LIBRARY_CATALOGS:-false}"
       SHOW_SEARCH_CATALOGS: "${SHOW_SEARCH_CATALOGS:-false}"
+      # Force the base URL used in generated install links / image URLs, e.g.
+      # BASE_URL=https://yourname.duckdns.org when served through the Caddy
+      # HTTPS override (docker-compose.caddy.yml). Empty = derive from request.
+      BASE_URL: "${BASE_URL:-}"
     volumes:
       - tube-data:/app/data
     restart: unless-stopped

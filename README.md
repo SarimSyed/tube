@@ -159,11 +159,68 @@ You only need the **Tube project files**; the search stack is pulled as images.
    your phone/PC open `http://<server-ip>:7000/configure`, paste your Real-Debrid
    token, and click **Install in Stremio** (or add the shown URL in Stremio). The
    same addon is then usable from any Stremio client — including your TV/Chromecast.
+   (If Stremio says *manifest not found* for the generated `http://` link even
+   though a browser shows the manifest, see "Stremio requires HTTPS" below.)
 
 > **Same LAN:** use the server's LAN IP (e.g. `192.168.1.50`). **VPS in the cloud:**
 > open/firewall port `7000` (and `8184` for the Zilean dashboard if you want it)
 > and use the VPS's public IP or a domain. Video is streamed directly from
 > Real-Debrid, so the addon itself carries almost no bandwidth.
+
+### Stremio requires HTTPS (plain-HTTP installs show "manifest not found")
+
+Stremio only installs an addon whose manifest URL is served over **HTTPS**, or
+from `127.0.0.1` (see the [addon SDK docs](https://stremio.github.io/stremio-addon-sdk/testing.html)).
+A browser will happily display the manifest at a plain
+`http://192.168.x.x:7000/<token>/manifest.json` link — that's why the generated
+link "looks fine" — but Stremio refuses to fetch an insecure, non-localhost
+addon and reports **manifest not found**. Tube's own-machine installs work only
+because Stremio treats addresses of the machine it runs on as local.
+
+Options, in increasing order of effort:
+
+- **Just testing, Stremio running on the same machine as Tube:** install
+  `http://127.0.0.1:7000/<token>/manifest.json` (localhost is allowed).
+- **LAN-only server, no public ports (recommended):** run the bundled Caddy
+  front door with a free DuckDNS name (steps below). Every Stremio device on the
+  LAN then installs from `https://yourname.duckdns.org/...` — a publicly-trusted
+  Let's Encrypt cert is obtained with the DNS-01 challenge, so **no inbound
+  internet ports are required**.
+- **Cloud/VPS with a domain:** put any HTTPS reverse proxy in front and set
+  `BASE_URL=https://your-domain` in `.env`. Tube already honors
+  `X-Forwarded-Proto`, so generated links become `https://` automatically.
+- **No domain / behind CGNAT:** Tailscale HTTPS (`*.ts.net` certificates are
+  publicly trusted) or a Cloudflare Tunnel both provide an HTTPS URL without
+  opening ports.
+
+#### Caddy + DuckDNS on a LAN-only server
+
+1. Create a free name at <https://www.duckdns.org> (e.g. `tube.duckdns.org`) and
+   copy its token.
+2. In `.env`, add:
+   ```bash
+   TUBE_DOMAIN=tube.duckdns.org
+   DUCKDNS_API_TOKEN=<your-token>
+   BASE_URL=https://tube.duckdns.org
+   ```
+3. Start the stack with the Caddy override (also works with `--profile search`):
+   ```bash
+   docker compose --profile search \
+     -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
+   ```
+   First start compiles a Caddy image with the DuckDNS module, then obtains the
+   certificate — check `docker logs caddy`; DNS propagation can take a minute.
+4. LAN devices must resolve `tube.duckdns.org` to the server's **LAN** IP:
+   DuckDNS points the name at your router's public (WAN) IP, which LAN clients
+   cannot use unless the router supports NAT loopback. Either enable loopback,
+   add a local DNS override (router dnsmasq / AdGuard Home), or — for a single
+   Stremio PC — a hosts-file entry:
+   ```
+   192.168.0.125  tube.duckdns.org
+   ```
+5. Open `https://tube.duckdns.org/configure`, generate the install link, and
+   install it in Stremio. `/configure` builds `https://` links from `BASE_URL`
+   and Caddy forwards the manifest/stream requests to the `tube` container.
 
 > **No Docker for the search backend?** You can still run **Tube alone** (Library +
 > Downloads only, no RD Search) with plain Node: `npm ci && npm run build && node

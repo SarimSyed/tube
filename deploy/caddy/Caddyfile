@@ -1,0 +1,19 @@
+# HTTPS front door for Tube on a LAN-only server.
+#
+# Stremio will only install an addon whose manifest URL is served over HTTPS
+# (or is on 127.0.0.1). A browser happily loads a plain http://LAN-IP manifest,
+# but Stremio refuses it with "manifest not found". This Caddyfile gives the
+# addon a publicly-trusted Let's Encrypt certificate for a free DuckDNS name,
+# obtained via the DNS-01 challenge, so no inbound internet ports are required.
+#
+# Environment (injected by docker-compose.caddy.yml):
+#   TUBE_DOMAIN         e.g. yourname.duckdns.org  (create it at duckdns.org first)
+#   DUCKDNS_API_TOKEN   your DuckDNS token (shown at the top of duckdns.org)
+{
+	acme_dns duckdns {$DUCKDNS_API_TOKEN}
+}
+
+{$TUBE_DOMAIN} {
+	reverse_proxy tube:7000
+	encode gzip
+}

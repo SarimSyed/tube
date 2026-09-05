@@ -1,0 +1,50 @@
+# Optional HTTPS front door for Tube (opt-in — not auto-loaded).
+#
+# Why this exists: Stremio refuses to install addons served over plain HTTP
+# unless the address is 127.0.0.1. So a LAN-only Tube reached as
+# http://192.168.0.125:7000 shows its manifest in a browser, but installing it
+# in Stremio fails with "manifest not found".
+#
+# This override puts Caddy in front of Tube and gives it a publicly-trusted
+# Let's Encrypt certificate for a free DuckDNS name, obtained with the DNS-01
+# challenge. No inbound ports from the internet are needed — only outbound
+# access to DuckDNS and Let's Encrypt.
+#
+# Start the full stack with it:
+#
+#   docker compose --profile search \
+#     -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
+#
+# Add to .env (see .env.example):
+#   TUBE_DOMAIN=yourname.duckdns.org          # create the name at duckdns.org
+#   DUCKDNS_API_TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+#   BASE_URL=https://yourname.duckdns.org
+#
+# LAN DNS caveat: yourname.duckdns.org publicly resolves to your router's WAN
+# IP. Stremio devices on the same LAN must reach it via the server's LAN IP —
+# enable NAT loopback on the router, or add a local override, e.g. on the
+# Stremio PC's hosts file:  192.168.0.125  yourname.duckdns.org
+# (details in README, "Stremio requires HTTPS").
+
+services:
+  caddy:
+    build: ./deploy/caddy
+    image: tube-caddy:local
+    container_name: caddy
+    restart: unless-stopped
+    depends_on:
+      - tube
+    ports:
+      - "80:80" # http -> https redirect (optional but handy on the LAN)
+      - "443:443" # the https endpoint Stremio installs from
+    environment:
+      TUBE_DOMAIN: "${TUBE_DOMAIN:-tube.duckdns.org}"
+      DUCKDNS_API_TOKEN: "${DUCKDNS_API_TOKEN:-}"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data # issued certificates & ACME account state
+      - caddy-config:/config
+
+volumes:
+  caddy-data:
+  caddy-config:
