@@ -91,6 +91,23 @@ docker compose --profile search up -d
 > it takes a while and several GB of RAM once; later syncs are incremental.
 > (We plan our own fork later; see `zilean-fork/docs/OUR-FORK.md`.)
 
+### Docker Compose notes
+
+- **`docker compose up -d`** runs Tube only, with the built-in The Pirate Bay
+  indexer for discovery — no Postgres involved.
+- **`docker compose --profile search up -d`** additionally starts the bundled
+  Zilean index and its PostgreSQL database. `POSTGRES_PASSWORD` is only used here.
+- The Tube image is built from this repository (`build: .`), so the first `up`
+  compiles it; later starts are quick.
+- **`POSTGRES_PASSWORD` defaults to `postgres`** if left unset (the compose
+  default is `${POSTGRES_PASSWORD:-postgres}`). Set it in `.env` **before the
+  first start** — the password is baked into the `zilean-db-data` volume at init,
+  so changing it later means recreating the volume:
+  `docker compose --profile search down -v`.
+- The database is **not published to the host** (no host port mapping); it is only
+  reachable by the `zilean` container on the internal Docker network, so the
+  default password is low-risk for local use — still, change it as good practice.
+
 Then open `http://<server-ip>:7000/configure`, select your provider, paste its API token, and
 click **Install in Stremio** (or copy the manual URL into Stremio → Addons → paste
 URL).
