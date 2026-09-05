@@ -136,7 +136,7 @@ it('labels TorBox streams without calling them Real-Debrid', async () => {
   vi.stubGlobal('fetch', vi.fn(async (input: string) => response(input.includes('/mylist') ? torrent() : 'https://cdn.example/movie.mkv')));
   try {
     const { streams } = await new StreamResolver(new TorBoxClient(token)).resolve('rd:42:1:1');
-    expect(streams[0].name).toBe('TB 1080P');
+    expect(streams[0].name).toBe('TB 1080P ⚡');
     expect(streams[0].behaviorHints?.bingeGroup).toBe('tube-tb');
   } finally { vi.unstubAllGlobals(); }
 });

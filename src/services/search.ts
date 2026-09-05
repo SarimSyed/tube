@@ -68,7 +68,11 @@ export class SearchService {
     return out;
   }
 
-  async search(query: string, type: ContentType): Promise<TorrentResult[]> {
+  async search(
+    query: string,
+    type: ContentType,
+    opts: { skipTitleFilter?: boolean } = {},
+  ): Promise<TorrentResult[]> {
     const normalized = query.trim();
     if (!normalized) return [];
 
@@ -86,6 +90,7 @@ export class SearchService {
 
     const queryTokens = [...normTokens(normalized)];
     const deduped = this.dedupe(combined).filter(r => {
+      if (opts.skipTitleFilter) return true;
       const titleTokens = [...normTokens(`${r.title} ${r.year ?? ''}`)];
       return queryTokens.every(q => titleTokens.some(t => t.startsWith(q)));
     }).filter((r) =>

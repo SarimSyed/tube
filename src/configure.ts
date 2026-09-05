@@ -38,6 +38,9 @@ export function renderConfigurePage(baseUrl: string): string {
     <label><input id="uncached" type="checkbox" /> Download when no cached stream is available</label>
     <p class="hint">Opening a movie or episode can start one torrent download in your TorBox account. Tube prefers cached streams and shows a dashboard link while downloading. Reopen the title after it finishes.</p>
   </div>
+  <label for="langs">Preferred languages (optional)</label>
+  <input id="langs" type="text" autocomplete="off" placeholder="english, french, urdu, german, spanish, hindi" />
+  <p class="hint">Comma-separated (names or codes, e.g. english, french, urdu, german / deutch / deu, spanish, hindi). These languages float to the top of the stream list when available. Leave blank to prefer Hindi / Dual / Multi.</p>
   <button id="go">Generate install link</button>
   <div class="error" id="err" role="alert">Please paste your provider's API token.</div>
 
@@ -54,6 +57,7 @@ export function renderConfigurePage(baseUrl: string): string {
   const token = document.getElementById('token');
   const provider = document.getElementById('provider');
   const uncached = document.getElementById('uncached');
+  const langsInput = document.getElementById('langs');
   const err = document.getElementById('err');
   const result = document.getElementById('result');
   const install = document.getElementById('install');
@@ -63,8 +67,10 @@ export function renderConfigurePage(baseUrl: string): string {
     const t = token.value.trim();
     if (!t) { err.style.display = 'block'; result.style.display = 'none'; return; }
     err.style.display = 'none';
+    const langs = langsInput.value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const credential = provider.value === 'torbox' ? (uncached.checked ? 'torbox-download:' : 'torbox:') + t : t;
-    const manifest = base + '/' + encodeURIComponent(credential) + '/manifest.json';
+    const withLangs = credential + (langs.length ? '~' + langs.join(',') : '');
+    const manifest = base + '/' + encodeURIComponent(withLangs) + '/manifest.json';
     install.href = 'stremio://' + manifest.replace(/^https?:\\/\\//, '');
     url.href = manifest;
     url.textContent = manifest;

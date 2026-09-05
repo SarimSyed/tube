@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
 import { RealDebridError, type RdGateway } from './realdebrid.js';
+
+// Pace TorBox API calls (shared across client instances) to avoid HTTP 429.
+let lastTorBoxRequest = 0;
 import type { RdTorrent } from '../types.js';
 
 interface TorBoxTorrent {
@@ -13,6 +16,7 @@ interface TorBoxTorrent {
   download_present: boolean;
   download_state: string;
   files?: Array<{ id: number; name: string; short_name?: string; size: number }>;
+  seeders?: number;
 }
 
 /** Adapt TorBox's torrent API to the existing cloud/stream pipeline. */
@@ -26,6 +30,9 @@ export class TorBoxClient implements RdGateway {
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     let response: Response;
     try {
+      const wait = lastTorBoxRequest + 120 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      lastTorBoxRequest = Date.now();
       response = await fetch(`${this.baseUrl}${path}`, {
         ...init,
         signal: AbortSignal.timeout(10_000),
@@ -50,6 +57,7 @@ export class TorBoxClient implements RdGateway {
     return {
       id: String(t.id), filename: t.name, hash: t.hash, bytes: t.size,
       status: ready ? 'downloaded' : 'downloading', progress: t.progress * 100, added: t.created_at,
+      seeders: typeof t.seeders === 'number' ? t.seeders : undefined,
       files,
       // Internal file references carry no credentials; unrestrict resolves them.
       links: ready ? files.map(f => `torbox://${t.id}/${f.id}/${encodeURIComponent(f.path.split('/').pop() ?? f.path)}`) : [],

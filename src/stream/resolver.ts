@@ -27,16 +27,18 @@ function basename(path: string): string {
   return path.split('/').pop() ?? path;
 }
 
-function playableStream(url: string, filename: string, bytes: number, provider?: string): Stream | null {
+function playableStream(url: string, filename: string, bytes: number, provider?: string, seeders?: number): Stream | null {
   let parsed: URL;
   try { parsed = new URL(url); } catch { return null; }
   if (!['http:', 'https:'].includes(parsed.protocol)) return null;
   const p = parseFilename(filename);
   const label = provider === 'torbox' ? 'TB' : 'RD';
+  const seedersLine = seeders != null && seeders >= 0 ? `${seeders} seeds` : '';
+  const langLine = p.languages?.length ? ` · ${p.languages.join('/')}` : '';
   return {
     url,
-    name: p.quality ? `${label} ${p.quality}` : provider === 'torbox' ? 'TorBox' : 'Real-Debrid',
-    description: [filename, formatBytes(bytes)].filter(Boolean).join('\n'),
+    name: `${label}${p.quality ? ` ${p.quality}` : ''}${langLine} ⚡`,
+    description: [filename, formatBytes(bytes), seedersLine].filter(Boolean).join('\n'),
     behaviorHints: {
       bingeGroup: `tube-${label.toLowerCase()}`,
       notWebReady: parsed.protocol !== 'https:' || !/\.mp4$/i.test(filename),
@@ -105,7 +107,7 @@ export async function torrentStreams(
       if (isBlockedFileError(err)) negatives?.add(torrent.hash);
       continue;
     }
-    const stream = playableStream(direct, title, file.bytes, rd.provider);
+    const stream = playableStream(direct, title, file.bytes, rd.provider, torrent.seeders);
     if (stream) streams.push(stream);
   }
   return streams;
@@ -123,6 +125,7 @@ export class StreamResolver {
       search?: SearchService;
       caches?: CacheSet;
       negatives?: NegativeStore;
+      preferredLanguages?: string[];
     } = {},
   ) {}
 
@@ -187,6 +190,7 @@ export class StreamResolver {
         season: result.season,
         episode: result.episode,
         negatives,
+        preferredLanguages: this.deps.preferredLanguages?.length ? this.deps.preferredLanguages : undefined,
       });
       this.deps.negatives?.saveSoon();
       return { streams };

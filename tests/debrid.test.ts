@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { createDebridClient } from '../src/services/debrid.js';
+import { createDebridClient, preferredLanguages } from '../src/services/debrid.js';
 import { buildManifest } from '../src/manifest.js';
 import { loadConfig } from '../src/config.js';
 import { CachedRealDebrid } from '../src/services/cachedRd.js';
@@ -25,6 +25,8 @@ it('routes TorBox credentials separately and keeps existing RD installs compatib
 });
 
 it('gives TorBox its own addon identity and only supported catalogs', () => {
+  vi.stubEnv('SHOW_LIBRARY_CATALOGS', '');
+  vi.stubEnv('SHOW_SEARCH_CATALOGS', '');
   const config = loadConfig();
   const rd = buildManifest(config, 'http://localhost');
   const tb = buildManifest(config, 'http://localhost', 'torbox');
@@ -56,4 +58,16 @@ it.each(['realdebrid', 'torbox'])('allows library and advanced search catalogs t
   vi.stubEnv('SHOW_SEARCH_CATALOGS', 'true');
   const search = buildManifest(loadConfig(), 'http://localhost', provider);
   expect(search.catalogs.map((c: any) => c.id)).toEqual(['rd-search', 'rd-search']);
+});
+
+
+it('parses preferred languages from the credential suffix and keeps providers working', () => {
+  expect(preferredLanguages('torbox:tok~hindi,tamil')).toEqual(['hindi', 'tamil']);
+  expect(preferredLanguages('torbox-download:tok~hindi')).toEqual(['hindi']);
+  expect(preferredLanguages('tok')).toEqual([]);
+
+  const config = loadConfig();
+  expect(createDebridClient('torbox:tok~hindi,tamil', config).provider).toBe('torbox');
+  expect(createDebridClient('torbox-download:tok~hindi', config).allowUncached).toBe(true);
+  expect(createDebridClient('tok~hindi', config).provider).toBe('realdebrid');
 });

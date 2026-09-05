@@ -2,9 +2,23 @@ import { RealDebridError, isBlockedFileError, type RdGateway } from '../services
 import type { TorrentResult } from '../types.js';
 import type { Stream } from '../stremio.js';
 import { torrentStreams } from './resolver.js';
+import { parseFilename, normalizeLanguage } from '../meta/parser.js';
 
 const DEFAULT_GRACE_MS = 8_000;
 const DEFAULT_MAX = 3;
+/** Aim to show at least this many entries (cached + downloading) before giving up. */
+const DOWNLOAD_TARGET = 30;
+/** Never submit more than this many NEW downloads in a single stream request. */
+const MAX_NEW_DOWNLOADS = 3;
+
+/** Resolution -> rank for deterministic stream ordering (higher = better). */
+const QUALITY_RANK: Record<string, number> = {
+  '4320p': 6, '2160p': 5, '4k': 5, '1440p': 4, '1080p': 3, '720p': 2, '480p': 1, '360p': 0,
+};
+function qualityRank(q?: string): number {
+  if (!q) return -1;
+  return QUALITY_RANK[q.toLowerCase()] ?? -1;
+}
 
 export interface ProbeOptions {
   season?: number;
@@ -21,6 +35,12 @@ export interface ProbeOptions {
   maxAttempts?: number;
   /** Total polling/delay budget, shared by all candidates. */
   timeoutMs?: number;
+  /** Aim for this many total entries before considering download top-up. */
+  downloadTarget?: number;
+  /** Cap on NEW download submissions per request. */
+  maxNewDownloads?: number;
+  /** Languages to float to the top of the stream list (default: hindi/dual/multi). */
+  preferredLanguages?: string[];
   /** Require a confident title/episode match before starting a background download. */
   canDownload?: (result: TorrentResult) => boolean;
 }
@@ -52,6 +72,11 @@ export async function findCachedStreams(
   results: TorrentResult[],
   opts: ProbeOptions = {},
 ): Promise<Stream[]> {
+  const preferred = (opts.preferredLanguages && opts.preferredLanguages.length
+    ? opts.preferredLanguages
+    : ['hindi', 'dual', 'multi']).map((l) => normalizeLanguage(l));
+  const isPreferred = (r: TorrentResult): boolean =>
+    parseFilename(r.raw || r.title).languages.some((l) => preferred.includes(normalizeLanguage(l)));
   let uncached: TorrentResult[] = [];
   // TorBox has its own authoritative cache; DMM/RD hits cannot stand in for it.
   if (rd.provider === 'torbox') {
@@ -61,17 +86,59 @@ export async function findCachedStreams(
       if (rd.allowUncached) uncached = results.filter(r => !cached.has(r.infoHash)
         && !opts.negatives?.has(r.infoHash) && (!opts.canDownload || opts.canDownload(r)));
       results = results.filter(r => cached.has(r.infoHash));
+      // Deterministic order + collapse duplicate releases (same quality & size).
+      results.sort((a, b) =>
+        qualityRank(b.quality) - qualityRank(a.quality) ||
+        (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
+      const seen = new Set<string>();
+      results = results.filter(r => {
+        // Only collapse true duplicates (same quality AND known size); unknown
+        // sizes (e.g. Zilean results) are kept distinct so every release shows.
+        const key = r.sizeBytes != null ? `${r.quality ?? ''}|${r.sizeBytes}` : `${r.quality ?? ''}|hash:${r.infoHash}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      if (uncached.length) {
+        uncached.sort((a, b) =>
+          qualityRank(b.quality) - qualityRank(a.quality) ||
+          (b.seeders ?? 0) - (a.seeders ?? 0) ||
+          (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
+        const uSeen = new Set<string>();
+        uncached = uncached.filter(r => {
+          const key = r.sizeBytes != null ? `${r.quality ?? ''}|${r.sizeBytes}` : `${r.quality ?? ''}|hash:${r.infoHash}`;
+          if (uSeen.has(key)) return false;
+          uSeen.add(key);
+          return true;
+        });
+        const uPref = uncached.filter(isPreferred);
+        if (uPref.length > 0) {
+          const uOthers = uncached.filter((r) => !isPreferred(r));
+          uncached = [...uPref.slice(0, 5), ...uOthers, ...uPref.slice(5)];
+        }
+      }
     } catch {
       return [];
     }
   }
-  const graceMs = opts.graceMs ?? DEFAULT_GRACE_MS;
+  // TorBox's cache check is authoritative, so cached torrents can be added
+  // quickly (no RD-style throttle); collect several releases per request.
+  const isTorbox = rd.provider === 'torbox';
+  // Surface preferred-language releases ahead of the rest (cached list).
+  const pref = results.filter(isPreferred);
+  if (pref.length > 0) {
+    const others = results.filter((r) => !isPreferred(r));
+    results = [...pref.slice(0, 5), ...others, ...pref.slice(5)];
+  }
+
+  const graceMs = opts.graceMs ?? (isTorbox ? 3_000 : DEFAULT_GRACE_MS);
   const pollMs = opts.pollMs ?? 500;
-  const addDelayMs = opts.addDelayMs ?? 1_500;
-  const max = opts.max ?? DEFAULT_MAX;
-  const maxAttempts = opts.maxAttempts ?? 4;
+  const addDelayMs = opts.addDelayMs ?? (isTorbox ? 0 : 1_500);
+  const max = opts.max ?? (isTorbox ? 30 : DEFAULT_MAX);
+  const maxAttempts = opts.maxAttempts ?? (isTorbox ? 40 : 4);
   const streams: Stream[] = [];
-  const stopAt = Date.now() + (opts.timeoutMs ?? 12_000);
+  const seenUrls = new Set<string>();
+  const stopAt = Date.now() + (opts.timeoutMs ?? (isTorbox ? 60_000 : 12_000));
   let existing: Map<string, string> | null = null;
   try {
     existing = new Map((await rd.listTorrents()).map(t => [t.hash.toLowerCase(), t.id]));
@@ -114,7 +181,16 @@ export async function findCachedStreams(
       if (info?.status === 'downloaded') {
         const got = await torrentStreams(rd, info, opts.season, opts.episode, opts.negatives);
         keep = got.length > 0;
-        streams.push(...got.slice(0, max - streams.length));
+        // Provider torrent info may already carry seeders; only fall back to the
+        // index result's seeders when the provider did not report any.
+        if (r.seeders != null && r.seeders >= 0 && (info.seeders == null || info.seeders < 0)) {
+          for (const stream of got) {
+            if (stream.description != null) stream.description = `${stream.description}\n${r.seeders} seeds`;
+          }
+        }
+        const fresh = got.filter((s) => s.url != null && !seenUrls.has(s.url));
+        for (const s of fresh) seenUrls.add(s.url!);
+        streams.push(...fresh.slice(0, max - streams.length));
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -133,33 +209,55 @@ export async function findCachedStreams(
     }
   }
 
-  // Download mode is a fallback, never an extra download beside working streams.
-  // Reuse an existing candidate first and submit at most one uncached release.
-  if (!streams.length && existing && max > 0 && attempts < maxAttempts && Date.now() < stopAt) {
-    const candidate = uncached.find(r => existing!.has(r.infoHash)) ?? uncached[0];
-    if (candidate) {
-      const status = (message: string): Stream[] => [{
-        name: 'TorBox — downloading',
+  // Top up a thin result set with a few downloads (TorBox download opt-in only).
+  // Cached streams always come first; we submit extra uncached torrents only to
+  const downloadTarget = opts.downloadTarget ?? DOWNLOAD_TARGET;
+  const maxNewDownloads = opts.maxNewDownloads ?? MAX_NEW_DOWNLOADS;
+  // fill the list up to downloadTarget, and never more than maxNewDownloads.
+  if (rd.allowUncached && uncached.length > 0 && streams.length < downloadTarget
+      && existing && max > 0 && attempts < maxAttempts && Date.now() < stopAt) {
+    let newDownloads = 0;
+    for (const candidate of uncached) {
+      if (streams.length >= downloadTarget || newDownloads >= maxNewDownloads
+          || attempts >= maxAttempts || Date.now() >= stopAt) break;
+      if (opts.negatives?.has(candidate.infoHash)) continue;
+
+      const qualitySuffix = candidate.quality ? ` ${candidate.quality.toUpperCase()}` : '';
+      const cp = parseFilename(candidate.raw || candidate.title);
+      const langSuffix = cp.languages?.length ? ` · ${cp.languages.join('/')}` : '';
+      const status = (message: string): Stream => ({
+        name: `TorBox — downloading${qualitySuffix}${langSuffix}`,
         description: `${candidate.raw || candidate.title}\n${message}\nOpen the TorBox dashboard to check progress. Reopen this title when finished.`,
         externalUrl: 'https://torbox.app/dashboard',
-      }];
+      });
+      attempts += 1;
       try {
-        const id = existing.get(candidate.infoHash)
-          ?? (await rd.addMagnet(`magnet:?xt=urn:btih:${candidate.infoHash}`, false)).id;
-        if (!id) return status('Queued by TorBox.');
+        let torrentId = existing.get(candidate.infoHash);
+        if (!torrentId) {
+          const added = await rd.addMagnet(`magnet:?xt=urn:btih:${candidate.infoHash}`, false);
+          torrentId = added.id;
+          newDownloads += 1;
+        }
+        if (!torrentId) {
+          streams.push(status('Queued by TorBox.'));
+          continue;
+        }
+        let info;
         try {
-          const info = await rd.getTorrentInfo(id);
-          if (info.status === 'downloaded') {
-            const ready = await torrentStreams(rd, info, opts.season, opts.episode, opts.negatives);
-            return ready.length ? ready.slice(0, max) : [{
-              name: 'TorBox — check download', description: 'Download finished but no matching playable file was found.',
-              externalUrl: 'https://torbox.app/dashboard',
-            }];
-          }
-          return status(`Download status: ${info.status}.`);
+          info = await rd.getTorrentInfo(torrentId);
         } catch {
           // Submission succeeded; retain it even if the next status read fails.
-          return status('Submitted; waiting for TorBox status.');
+          streams.push(status('Submitted; waiting for TorBox status.'));
+          continue;
+        }
+        if (info.status === 'downloaded') {
+          const ready = await torrentStreams(rd, info, opts.season, opts.episode, opts.negatives);
+          const fresh = ready.filter((s) => s.url != null && !seenUrls.has(s.url));
+          for (const s of fresh) seenUrls.add(s.url!);
+          if (fresh.length) streams.push(fresh[0]);
+          else streams.push({ name: 'TorBox — check download', description: 'Download finished but no matching playable file was found.', externalUrl: 'https://torbox.app/dashboard' });
+        } else {
+          streams.push(status(`Download status: ${info.status}.`));
         }
       } catch (err) {
         if (isBlockedFileError(err)) opts.negatives?.add(candidate.infoHash);

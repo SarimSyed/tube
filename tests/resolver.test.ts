@@ -36,7 +36,7 @@ describe('StreamResolver', () => {
     const resp = await resolver.resolve('rd:T1');
     expect(resp.streams.length).toBe(1);
     expect(resp.streams[0].url).toBe('https://rd.example/d/1/The.Matrix.1999.1080p.mkv');
-    expect(resp.streams[0].name).toBe('RD 1080P');
+    expect(resp.streams[0].name).toBe('RD 1080P ⚡');
   });
 
   it('returns empty streams when torrent is still downloading', async () => {

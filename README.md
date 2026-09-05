@@ -21,7 +21,7 @@ Optional catalogs (enable `SHOW_LIBRARY_CATALOGS=true` for Library/Downloads or 
 | --- | --- |
 | **RD Library** | Everything already in your Real-Debrid torrents (movies & series) |
 | **RD Downloads** | Your unrestricted Real-Debrid hoster links / downloads |
-| **RD Search** | One card per title from the search index; available releases appear in the stream picker |
+| **RD Search** | One card per title from the search index; available releases appear in the stream picker, ordered by quality with multiple cached options listed |
 
 TorBox offers the equivalent **TB Library** and **TB Search** catalogs; it has no hoster-download catalog. These server settings apply to all installs on that server. Reinstall Tube in Stremio after changing catalog settings so Stremio refreshes its installed manifest.
 
@@ -52,8 +52,9 @@ Key properties:
   enriched with posters from TMDB.
 - **Library play** → provider torrent details → direct download URL. Real-Debrid
   landing-page links must be unrestricted first.
-- **Search** → a [Zilean](https://github.com/iPromKnight/zilean) index (optionally
-  Jackett/Prowlarr via Torznab) → title grouping → provider availability checks.
+- **Search** → a [Zilean](https://github.com/iPromKnight/zilean) index plus the
+  built-in [The Pirate Bay](https://apibay.org) JSON API (live releases + seeders),
+  optionally Jackett/Prowlarr via Torznab → title grouping → provider availability checks.
   TorBox uses its own `/torrents/checkcached` API. If RD instant availability is
   disabled, titles remain visible and bounded probing determines which releases play.
 - **Search play** → reuse an existing cloud torrent or add an available magnet,
@@ -96,15 +97,17 @@ URL).
 
 ### Choosing a search index
 
-Torrent discovery from standard titles and the optional separate search catalog needs an index:
+Torrent discovery from standard titles and the optional separate search catalog uses these sources:
 
-- **Bundled (recommended)**: enable the `search` compose profile above — it runs
-  the published, actively-maintained Zilean image (SolidRhino line) plus PostgreSQL.
+- **Built-in**: The Pirate Bay (apibay.org JSON API) is enabled by default — live
+  releases with seeder counts and IMDb ids, no setup required.
+- **Bundled**: enable the `search` compose profile above — it runs the published,
+  actively-maintained Zilean image (SolidRhino line) plus PostgreSQL.
 - **Any other Zilean instance**: set `ZILEAN_URL` to it.
 - **Jackett / Prowlarr**: set `TORZNAB_URL=http://jackett:9117` and
   `TORZNAB_API_KEY=...` to use your own indexers (Torznab protocol).
 
-Without a search index, Tube can only match files already in your cloud. Optional library catalogs still work.
+Without Zilean, discovery still works through The Pirate Bay (and Torznab if configured); Zilean adds the DMM shared-hashlist coverage. Optional library catalogs still work.
 
 ## Deploying on your always-on server / NAS / VPS
 
@@ -163,7 +166,7 @@ You only need the **Tube project files**; the search stack is pulled as images.
 | `ZILEAN_URL` | *(empty)* | Zilean search index URL |
 | `TORZNAB_URL` | *(empty)* | Jackett/Prowlarr Torznab endpoint |
 | `TORZNAB_API_KEY` | *(empty)* | Torznab API key |
-| `INCLUDE_UNCACHED` | `false` | Also list uncached search titles when availability is known; playback still requires a ready video |
+| `INCLUDE_UNCACHED` | `true` | List uncached search titles too (cached ones stay first); playback of uncached still requires a ready video |
 | `CACHE_TTL_SECONDS` | `120` | TTL for cached Real-Debrid/TMDB responses |
 
 ## Development
@@ -188,6 +191,9 @@ npm run build        # emit dist/
   add torrents.
 - An uncached or provider-blocked file cannot be played immediately. Tube tries
   matching alternatives and never presents an HTML landing page as a video.
+- The stream picker lists several cached releases (sorted by quality). Seeders are
+  shown when the source provides them (Torznab indexers and Real-Debrid cloud
+  torrents); Zilean/DMM hashlists carry no seeder counts.
 - Newly generated search IDs retain title context across restarts. Re-run old
   searches to replace legacy hash-only cards that have lost their cached metadata.
 - MKV/HTTP streams carry Stremio playback compatibility hints. Browser playback

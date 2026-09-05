@@ -8,11 +8,12 @@ import { loadConfig } from './config.js';
 import type { Config } from './types.js';
 import { createCaches } from './services/cache.js';
 import { RealDebridError } from './services/realdebrid.js';
-import { createDebridClient } from './services/debrid.js';
+import { createDebridClient, preferredLanguages } from './services/debrid.js';
 import { CachedRealDebrid } from './services/cachedRd.js';
 import { TmdbClient } from './services/tmdb.js';
 import { ZileanProvider } from './services/zilean.js';
 import { TorznabProvider } from './services/torznab.js';
+import { PirateBayProvider } from './services/piratebay.js';
 import { SearchService } from './services/search.js';
 import { MetaService } from './meta/meta.js';
 import { LibraryCatalog } from './catalogs/library.js';
@@ -45,6 +46,7 @@ const metaService = new MetaService(tmdb, caches);
 
 const providers = [];
 if (config.zileanUrl) providers.push(new ZileanProvider(config.zileanUrl, config.zileanApiKey ?? undefined));
+providers.push(new PirateBayProvider());
 if (config.torznabUrl && config.torznabApiKey) {
   providers.push(new TorznabProvider(config.torznabUrl, config.torznabApiKey));
 }
@@ -239,8 +241,9 @@ function streamHandler(req: Request, res: Response): void {
   }
   const rd = new CachedRealDebrid(createDebridClient(token, config), caches);
   const negatives = rd.provider === 'torbox' ? torboxNegatives : negativeStore;
-  const resolver = new StreamResolver(rd, { search: searchService, caches, negatives });
-  const ttProvider = new TtStreamProvider(rd, caches, searchService, negatives);
+  const langs = preferredLanguages(token);
+  const resolver = new StreamResolver(rd, { search: searchService, caches, negatives, preferredLanguages: langs });
+  const ttProvider = new TtStreamProvider(rd, caches, searchService, negatives, langs);
 
   const type = stripJson(req.params.type) as ContentType;
   const id = stripJson(req.params.id);
@@ -248,7 +251,7 @@ function streamHandler(req: Request, res: Response): void {
     ? ttProvider.resolve(type, id)
     : resolver.resolve(id);
 
-  console.log(`[stream] ${type}/${id}`);
+  console.log(`[stream] ${type}/${id} provider=${rd.provider} download=${rd.allowUncached ? 'on' : 'off'}`);
   promise
     .then((resp) => {
       console.log(`[stream] ${type}/${id} -> ${resp.streams.length} stream(s)`);

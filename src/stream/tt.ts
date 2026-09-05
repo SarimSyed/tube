@@ -43,6 +43,8 @@ function bigramSimilarity(a: string, b: string): number {
 }
 
 const TITLE_SIMILARITY_THRESHOLD = 0.9;
+/** Aim to return up to this many total streams (cloud + index). */
+const STREAM_TARGET = 30;
 
 interface YearOk {
   torrentYear?: number;
@@ -60,6 +62,7 @@ export class TtStreamProvider {
     private caches: CacheSet,
     private search: SearchService | null = null,
     private negativesStore: NegativeStore | null = null,
+    private preferredLanguages: string[] = [],
   ) {}
 
   private async cinemetaMeta(type: ContentType, ttId: string): Promise<{ name: string; year?: number } | null> {
@@ -108,7 +111,7 @@ export class TtStreamProvider {
     const seenUrls = new Set<string>();
 
     for (const t of torrents) {
-      if (streams.length >= 10) break;
+      if (streams.length >= STREAM_TARGET) break;
       const p = parseFilename(t.filename);
       if (!p.title) continue;
       const torrentNorm = normTitle(p.title);
@@ -143,18 +146,25 @@ export class TtStreamProvider {
         if (!s.url || seenUrls.has(s.url)) continue;
         seenUrls.add(s.url);
         streams.push(s);
-        if (streams.length >= 10) break;
+        if (streams.length >= STREAM_TARGET) break;
       }
     }
 
-    // No cloud match: fall back to searching the index for the title and adding
-    // the best result (Torrentio-style) so any title can still yield streams.
-    if (streams.length === 0 && this.search) {
+    // Cloud streams come first; if we still have room, top up from the index so a
+    // title with a single cloud copy still surfaces its other cached releases.
+    if (this.search && streams.length < STREAM_TARGET) {
       const found = await this.searchAndAdd(type, meta.name, meta.year, season, episode);
       streams.push(...found);
     }
 
-    return { streams };
+    // Dedupe by URL (cloud and index may both surface the same torrent) and cap.
+    const seen = new Set<string>();
+    const deduped = streams.filter((s) => {
+      if (!s.url || seen.has(s.url)) return false;
+      seen.add(s.url);
+      return true;
+    });
+    return { streams: deduped.slice(0, STREAM_TARGET) };
   }
 
   private scoreCandidate(r: TorrentResult, type: ContentType, metaYear: number | undefined, season?: number, episode?: number): number {
@@ -178,12 +188,35 @@ export class TtStreamProvider {
     episode?: number,
   ): Promise<Stream[]> {
     if (!this.search) return [];
-    let results: TorrentResult[];
+    let results: TorrentResult[] = [];
     try {
       results = await this.search.search(name, type);
     } catch {
-      return [];
+      results = [];
     }
+
+    // Also search each prioritized language explicitly so dubbed releases that a
+    // plain title search misses (e.g. "Dune Part One Hindi") still surface.
+    const preferred = this.preferredLanguages.length ? this.preferredLanguages : [];
+    if (preferred.length) {
+      const extra: TorrentResult[] = [];
+      for (const lang of preferred) {
+        try {
+          const found = await this.search.search(`${name} ${lang}`, type, { skipTitleFilter: true });
+          for (const r of found) {
+            if (normalizeTitle(r.title) === normalizeTitle(name) &&
+                (type !== 'movie' || yearsMatch({ torrentYear: r.year, metaYear }))) {
+              extra.push(r);
+            }
+          }
+        } catch {
+          // ignore a failed language search
+        }
+      }
+      const seen = new Set(extra.map((r) => r.infoHash));
+      results = [...extra, ...results.filter((r) => !seen.has(r.infoHash))];
+    }
+
     if (results.length === 0) return [];
 
     // Best candidates first, then probe each against RD: cached ones stream
@@ -212,10 +245,11 @@ export class TtStreamProvider {
     const negatives = this.negativesStore
       ? this.negativesStore.get()
       : (this.caches.misc.get(negKey) as Set<string> | undefined) ?? new Set<string>();
-    console.warn(`[tt] no cloud match for "${name}" — probing ${candidates.length} cached index result(s)`);
+    console.warn(`[tt] probing ${candidates.length} cached index result(s) for "${name}"`);
     try {
       const streams = await findCachedStreams(this.rd, candidates, {
         season, episode, negatives,
+        preferredLanguages: this.preferredLanguages.length ? this.preferredLanguages : undefined,
         canDownload: r => normalizeTitle(r.title) === normalizeTitle(name)
           && r.isSeries === (type === 'series')
           && (type !== 'movie' || yearsMatch({ torrentYear: r.year, metaYear }))

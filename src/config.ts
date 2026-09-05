@@ -61,7 +61,7 @@ export function loadConfig(): Config {
     torznabUrl: env('TORZNAB_URL'),
     torznabApiKey: env('TORZNAB_API_KEY'),
     cacheTtlSeconds: envInt('CACHE_TTL_SECONDS', 120),
-    includeUncached: envBool('INCLUDE_UNCACHED', false),
+    includeUncached: envBool('INCLUDE_UNCACHED', true),
     showLibraryCatalogs: envBool('SHOW_LIBRARY_CATALOGS', false),
     showSearchCatalogs: envBool('SHOW_SEARCH_CATALOGS', false),
     addonId: env('ADDON_ID') ?? 'community.tube',

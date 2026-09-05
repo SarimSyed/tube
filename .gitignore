@@ -8,3 +8,4 @@ coverage/
 # The Zilean fork is its own git repository (see zilean-fork/docs/OUR-FORK.md).
 zilean-fork/
 .npm-cache/
+.docker/

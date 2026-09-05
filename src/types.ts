@@ -60,6 +60,8 @@ export interface ParsedMedia {
   quality?: string;
   /** Group / release tag, e.g. "GECKOS". */
   group?: string;
+  /** Detected audio languages, e.g. ["Hindi", "Dual"]. */
+  languages: string[];
   /** Original filename the result was parsed from. */
   raw: string;
 }
@@ -79,7 +81,7 @@ export interface TorrentResult {
   imdbId?: string;
   seeders?: number;
   raw: string;
-  source: 'zilean' | 'torznab';
+  source: 'zilean' | 'torznab' | 'piratebay';
 }
 
 /** TMDB metadata used to enrich metas. */

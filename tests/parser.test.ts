@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseFilename, guessType, isVideoFile } from '../src/meta/parser.js';
+import { parseFilename, guessType, isVideoFile, normalizeLanguage } from '../src/meta/parser.js';
 
 describe('parseFilename', () => {
   it('parses a movie release', () => {
@@ -47,6 +47,30 @@ describe('parseFilename', () => {
     expect(p.title).toBe('The Boy in the Striped Pyjamas');
     expect(p.year).toBe(2008);
     expect(p.quality).toBe('1080P');
+  });
+
+  it('detects audio languages like Hindi and Dual', () => {
+    const p = parseFilename('Movie.2024.1080p.Hindi.Dual.Audio.x264.mkv');
+    expect(p.languages).toContain('Hindi');
+    expect(p.languages).toContain('Dual');
+  });
+
+  it('reports no languages when none are tagged', () => {
+    expect(parseFilename('Movie.2024.1080p.BluRay.x264.mkv').languages).toEqual([]);
+  });
+
+  it('detects a broad set of languages from release tags', () => {
+    expect(parseFilename('Movie.2024.1080p.German.x264.mkv').languages).toContain('German');
+    expect(parseFilename('Movie.2024.720p.FRENCH.x264.mkv').languages).toContain('French');
+    expect(parseFilename('Movie.2024.1080p.URDU.x264.mkv').languages).toContain('Urdu');
+    expect(parseFilename('Movie.2024.1080p.SPANISH.x264.mkv').languages).toContain('Spanish');
+  });
+
+  it('normalizes language aliases to a canonical key', () => {
+    expect(normalizeLanguage('deutch')).toBe('german');
+    expect(normalizeLanguage('deu')).toBe('german');
+    expect(normalizeLanguage('German')).toBe('german');
+    expect(normalizeLanguage('fra')).toBe('french');
   });
 
   it('strips scene/cam release tags like DCPRIP and LTE from movie titles', () => {

@@ -9,7 +9,7 @@ const SUB_EXT = /\.(srt|ass|ssa|sub|vtt|idx)$/i;
 
 /** Known noise tokens to strip from titles. */
 const NOISE = new Set([
-  '2160p', '1080p', '720p', '480p', '360p', '4k', 'uhd', 'hd', 'hdr', 'hdr10',
+  '4320p', '2160p', '1440p', '1080p', '720p', '480p', '360p', '4k', '8k', 'uhd', 'hd', 'hdr', 'hdr10',
   'hdr10plus', 'dv', 'dovi', 'dolby', 'vision', 'bluray', 'blu-ray', 'web', 'web-dl',
   'webrip', 'webdl', 'dvdrip', 'bdrip', 'brrip', 'hdrip', 'hdtv', 'remux', 'x264',
   'x265', 'h264', 'h265', 'hevc', 'avc', 'av1', 'vp9', 'aac', 'aac2', 'ac3', 'dts',
@@ -21,12 +21,83 @@ const NOISE = new Set([
   'screener', 'webcap', 'rarbg', 'yts', 'yify',
 ]);
 
+/** Audio-language tags commonly found in release names. */
+const LANGUAGE_DETECT: Array<[RegExp, string]> = [
+  [/\b(?:english|eng)\b/i, 'English'],
+  [/\b(?:french|fre|fra)\b/i, 'French'],
+  [/\b(?:german|deutsch|deu|ger)\b/i, 'German'],
+  [/\b(?:urdu|urd)\b/i, 'Urdu'],
+  [/\b(?:hindi|hin)\b/i, 'Hindi'],
+  [/\b(?:tamil|tam)\b/i, 'Tamil'],
+  [/\b(?:telugu)\b/i, 'Telugu'],
+  [/\b(?:malayalam)\b/i, 'Malayalam'],
+  [/\b(?:kannada)\b/i, 'Kannada'],
+  [/\b(?:bengali)\b/i, 'Bengali'],
+  [/\b(?:punjabi|pun)\b/i, 'Punjabi'],
+  [/\b(?:marathi)\b/i, 'Marathi'],
+  [/\b(?:gujarati|guj)\b/i, 'Gujarati'],
+  [/\b(?:spanish|spa)\b/i, 'Spanish'],
+  [/\b(?:italian|ita)\b/i, 'Italian'],
+  [/\b(?:portuguese|por)\b/i, 'Portuguese'],
+  [/\b(?:russian|rus)\b/i, 'Russian'],
+  [/\b(?:japanese|jpn)\b/i, 'Japanese'],
+  [/\b(?:korean|kor)\b/i, 'Korean'],
+  [/\b(?:chinese|zho|chi)\b/i, 'Chinese'],
+  [/\b(?:arabic|ara)\b/i, 'Arabic'],
+  [/\b(?:turkish|tur)\b/i, 'Turkish'],
+  [/\b(?:polish|pol)\b/i, 'Polish'],
+  [/\b(?:dutch|dut|ned)\b/i, 'Dutch'],
+  [/\b(?:thai|tha)\b/i, 'Thai'],
+  [/\b(?:vietnamese|vie)\b/i, 'Vietnamese'],
+  [/\b(?:indonesian|ind)\b/i, 'Indonesian'],
+  [/\b(?:filipino|fil|tagalog)\b/i, 'Filipino'],
+  [/\bdual\b/i, 'Dual'],
+  [/\bmulti\b/i, 'Multi'],
+];
+
+const LANGUAGE_ALIASES: Record<string, string> = {
+  english: 'english', eng: 'english', en: 'english',
+  french: 'french', fre: 'french', fra: 'french', fr: 'french',
+  german: 'german', deutsch: 'german', deutch: 'german', deu: 'german', ger: 'german', de: 'german',
+  urdu: 'urdu', urd: 'urdu',
+  hindi: 'hindi', hin: 'hindi',
+  tamil: 'tamil', tam: 'tamil',
+  telugu: 'telugu', tel: 'telugu',
+  malayalam: 'malayalam', mal: 'malayalam',
+  kannada: 'kannada', kan: 'kannada',
+  bengali: 'bengali', ben: 'bengali',
+  punjabi: 'punjabi', pun: 'punjabi', pan: 'punjabi',
+  marathi: 'marathi', mar: 'marathi',
+  gujarati: 'gujarati', guj: 'gujarati',
+  spanish: 'spanish', spa: 'spanish', es: 'spanish',
+  italian: 'italian', ita: 'italian', it: 'italian',
+  portuguese: 'portuguese', por: 'portuguese', pt: 'portuguese',
+  russian: 'russian', rus: 'russian', ru: 'russian',
+  japanese: 'japanese', jpn: 'japanese', jp: 'japanese',
+  korean: 'korean', kor: 'korean',
+  chinese: 'chinese', chi: 'chinese', zho: 'chinese', zh: 'chinese',
+  arabic: 'arabic', ara: 'arabic',
+  turkish: 'turkish', tur: 'turkish',
+  polish: 'polish', pol: 'polish',
+  dutch: 'dutch', dut: 'dutch', ned: 'dutch', nl: 'dutch',
+  thai: 'thai', tha: 'thai',
+  vietnamese: 'vietnamese', vie: 'vietnamese',
+  indonesian: 'indonesian', ind: 'indonesian',
+  filipino: 'filipino', fil: 'filipino', tagalog: 'filipino',
+  dual: 'dual', multi: 'multi',
+};
+
+/** Normalize a language name/code (e.g. "deutch"/"deu"/"german") to a canonical key. */
+export function normalizeLanguage(input: string): string {
+  return LANGUAGE_ALIASES[input.trim().toLowerCase()] ?? input.trim().toLowerCase();
+}
+
 const YEAR_RE = /\b(19\d{2}|20\d{2})\b/;
 const SEASON_EPISODE_RE = /[sS](\d{1,2})[eE](\d{1,3})/;
 const SEASON_ONLY_RE = /[sS](\d{1,2})\b/;
 const SEASON_WORD_RE = /season[.\s]*(\d{1,2})/i;
 const EPISODE_ONLY_RE = /[eE](\d{1,3})\b/;
-const QUALITY_RE = /\b(2160p|1080p|720p|480p|360p|4k)\b/i;
+const QUALITY_RE = /\b(4320p|2160p|1440p|1080p|720p|480p|360p|4k|8k)\b/i;
 
 function stripExtension(name: string): string {
   // Only strip a real file extension (terminal 1-5 alnum chars). A plain
@@ -60,6 +131,10 @@ export function guessType(filename: string): 'movie' | 'series' {
  */
 export function parseFilename(filename: string): ParsedMedia {
   const raw = filename;
+  const languages: string[] = [];
+  for (const [re, label] of LANGUAGE_DETECT) {
+    if (re.test(raw) && !languages.includes(label)) languages.push(label);
+  }
   let working = humanize(stripExtension(filename));
 
   // Year
@@ -133,5 +208,5 @@ export function parseFilename(filename: string): ParsedMedia {
     if (cleaned) title = cleaned;
   }
 
-  return { title, year, isSeries, season, episode, quality, group, raw };
+  return { title, year, isSeries, season, episode, quality, group, languages, raw };
 }

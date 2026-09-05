@@ -215,3 +215,129 @@ it.each([
     expect(rd.addMagnet).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });
+
+describe('TtStreamProvider cloud top-up', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('combines a single cloud stream with the other cached qualities from the index', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ meta: { id: 'tt1160419', type: 'movie', name: 'Dune Part One', year: '2021' } }), { status: 200 }),
+    );
+
+    const cloudHash = 'c'.repeat(40);
+    const byHash = new Map<string, { raw: string; quality: string }>([
+      [cloudHash, { raw: 'Dune.Part.One.2021.720p.mkv', quality: '720p' }],
+      ['1'.repeat(40), { raw: 'Dune.Part.One.2021.2160p.REMUX.mkv', quality: '2160p' }],
+      ['2'.repeat(40), { raw: 'Dune.Part.One.2021.1080p.WEB-DL.mkv', quality: '1080p' }],
+    ]);
+
+    const rd = {
+      provider: 'torbox' as const,
+      allowUncached: false,
+      listTorrents: vi.fn().mockResolvedValue([
+        { id: 'CLOUD', filename: 'Dune.Part.One.2021.720p.mkv', hash: cloudHash, status: 'downloaded', progress: 100, added: '2024', bytes: 1 },
+      ]),
+      getTorrentInfo: vi.fn(async (id: string) => {
+        const hash = id === 'CLOUD' ? cloudHash : id.replace(/^id-/, '');
+        const e = byHash.get(hash)!;
+        return {
+          id, filename: e.raw, status: 'downloaded', progress: 100, hash, bytes: 1, added: '',
+          files: [{ id: 0, path: e.raw, bytes: 1, selected: 1 }],
+          links: [`torbox://${id}/0/${e.raw}`],
+        } as never;
+      }),
+      selectAllFiles: async () => {},
+      deleteTorrent: vi.fn(async () => {}),
+      unrestrict: vi.fn(async (l: string) => ({ download: `https://dl/${l.split('/').pop()}`, filename: l.split('/').pop() })),
+      instantAvailability: vi.fn().mockResolvedValue(new Set(['1'.repeat(40), '2'.repeat(40)])),
+      addMagnet: vi.fn(async (m: string) => ({ id: `id-${(m.match(/btih:([0-9a-f]+)/i) || [])[1]}`, uri: m })),
+    } as unknown as RdGateway;
+
+    const provider: TorrentProvider = {
+      name: 'fake',
+      search: vi.fn().mockResolvedValue([
+        { infoHash: '1'.repeat(40), title: 'Dune Part One', quality: '2160p', sizeBytes: 50_000_000_000, isSeries: false, raw: 'Dune.Part.One.2021.2160p.REMUX.mkv', source: 'zilean' },
+        { infoHash: '2'.repeat(40), title: 'Dune Part One', quality: '1080p', sizeBytes: 10_000_000_000, isSeries: false, raw: 'Dune.Part.One.2021.1080p.WEB-DL.mkv', source: 'zilean' },
+      ]),
+    };
+
+    const caches = createCaches(3600);
+    const tt = new TtStreamProvider(rd, caches, new SearchService([provider], caches));
+    const resp = await tt.resolve('movie', 'tt1160419');
+
+    expect(resp.streams.map(s => s.name).sort()).toEqual(['TB 1080P ⚡', 'TB 2160P ⚡', 'TB 720P ⚡']);
+  });
+});
+
+describe('per-language search', () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('runs an extra search per prioritized language and includes those releases', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ meta: { id: 'tt1160419', type: 'movie', name: 'Dune Part One', year: '2021' } }), { status: 200 }),
+    );
+
+    const baseHash = '1'.repeat(40);
+    const hindiHash = '2'.repeat(40);
+    const byHash = new Map<string, { raw: string; quality: string }>([
+      [baseHash, { raw: 'Dune.Part.One.2021.2160p.mkv', quality: '2160p' }],
+      [hindiHash, { raw: 'Dune.Part.One.2021.1080p.Hindi.mkv', quality: '1080p' }],
+    ]);
+
+    const rd = {
+      provider: 'torbox' as const,
+      allowUncached: false,
+      listTorrents: vi.fn().mockResolvedValue([]),
+      getTorrentInfo: vi.fn(async (id: string) => {
+        const h = id.replace(/^id-/, '');
+        const e = byHash.get(h)!;
+        return {
+          id, filename: e.raw, status: 'downloaded', progress: 100, hash: h, bytes: 1, added: '',
+          files: [{ id: 0, path: e.raw, bytes: 1, selected: 1 }],
+          links: [`torbox://${id}/0/${e.raw}`],
+        } as never;
+      }),
+      selectAllFiles: async () => {},
+      deleteTorrent: vi.fn(async () => {}),
+      unrestrict: vi.fn(async (l: string) => ({ download: `https://dl/${l.split('/').pop()}`, filename: l.split('/').pop() })),
+      instantAvailability: vi.fn().mockResolvedValue(new Set([baseHash, hindiHash])),
+      addMagnet: vi.fn(async (m: string) => ({ id: `id-${(m.match(/btih:([0-9a-f]+)/i) || [])[1]}`, uri: m })),
+    } as unknown as RdGateway;
+
+    const provider: TorrentProvider = {
+      name: 'fake',
+      search: vi.fn(async (q: string) => {
+        if (q.toLowerCase().includes('hindi')) {
+          return [{ infoHash: hindiHash, title: 'Dune Part One', quality: '1080p', sizeBytes: 8_000_000_000, isSeries: false, raw: 'Dune.Part.One.2021.1080p.Hindi.mkv', source: 'piratebay' }];
+        }
+        return [{ infoHash: baseHash, title: 'Dune Part One', quality: '2160p', sizeBytes: 20_000_000_000, isSeries: false, raw: 'Dune.Part.One.2021.2160p.mkv', source: 'piratebay' }];
+      }),
+    };
+
+    const caches = createCaches(3600);
+    const tt = new TtStreamProvider(rd, caches, new SearchService([provider], caches), null, ['hindi']);
+    const resp = await tt.resolve('movie', 'tt1160419');
+
+    expect(provider.search).toHaveBeenCalledWith('Dune Part One hindi');
+    expect(resp.streams).toHaveLength(2);
+    expect(resp.streams.some(s => s.name?.includes('Hindi'))).toBe(true);
+  });
+});
