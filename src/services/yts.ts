@@ -6,6 +6,7 @@
 // HTTP / parse errors (return [] and log instead), and bound the request with a
 // timeout so a stalled upstream cannot hang the handler.
 import type { TorrentProvider, TorrentResult } from '../types.js';
+import { UPSTREAM_TIMEOUT_MS } from '../constants.js';
 
 const BASE = 'https://yts.mx/api/v2';
 
@@ -65,7 +66,7 @@ export class YtsProvider implements TorrentProvider {
     let res: Response;
     try {
       const params = new URLSearchParams({ query_term: query, limit: '50' });
-      res = await fetch(`${BASE}/list_movies.json?${params}`, { signal: AbortSignal.timeout(10_000) });
+      res = await fetch(`${BASE}/list_movies.json?${params}`, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
     } catch (err) {
       console.warn(`[yts] request failed for "${query}":`, err instanceof Error ? err.message : err);
       return [];

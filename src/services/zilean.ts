@@ -5,6 +5,7 @@
  * Zilean reports no seeder counts — only on-demand cached/uncached hints.
  */
 import type { TorrentProvider, TorrentResult } from '../types.js';
+import { UPSTREAM_TIMEOUT_MS } from '../constants.js';
 
 /** One entry from Zilean's DMM search API (`POST /dmm/search` response shape). */
 interface ZileanTorrent {
@@ -81,7 +82,7 @@ export class ZileanProvider implements TorrentProvider {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ QueryText: query }),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
     } catch (err) {
       console.warn(`[zilean] search failed for "${query}":`, err instanceof Error ? err.message : err);
@@ -117,7 +118,7 @@ export class ZileanProvider implements TorrentProvider {
       const qs = new URLSearchParams({ hashes: hashes.join(',') });
       const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/torrents/checkcached?${qs}`, {
         headers: { 'X-API-Key': this.apiKey },
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
       if (!res.ok) {
         console.warn(`[zilean] checkcached HTTP ${res.status}`);

@@ -170,7 +170,7 @@ describe('TtStreamProvider index fallback', () => {
       selectAllFiles: vi.fn().mockResolvedValue(undefined),
     } as unknown as RdGateway;
 
-    const tt = new TtStreamProvider(rd, createCaches(3600), searchService);
+    const tt = new TtStreamProvider(rd, createCaches(3600), { search: searchService });
     const resp = await tt.resolve('movie', 'tt0133093');
 
     expect(resp.streams).toHaveLength(1);
@@ -192,7 +192,7 @@ it('finds a TorBox cached release beyond the first six index results with an emp
       getTorrentInfo:async () => ({id:'8',hash:good.infoHash,status:'downloaded',files:[{id:1,path:'Example.Movie.2020.mkv',bytes:100,selected:1}],links:['https://example/landing']}),
       unrestrict:async () => ({download:'https://cdn.example/movie.mkv',filename:'Example.Movie.2020.mkv'}),
     } as unknown as RdGateway;
-    const {streams} = await new TtStreamProvider(rd,caches,search).resolve('movie','tt123456');
+    const {streams} = await new TtStreamProvider(rd,caches,{ search }).resolve('movie','tt123456');
     expect(streams).toHaveLength(1);
     expect(rd.addMagnet).toHaveBeenCalledWith(`magnet:?xt=urn:btih:${good.infoHash}`);
   } finally { vi.unstubAllGlobals(); }
@@ -214,7 +214,7 @@ it.each([
       provider: 'torbox', allowUncached: true, listTorrents: async () => [], instantAvailability: async () => new Set(),
       addMagnet: vi.fn(async () => ({ id: '42', uri: '' })), getTorrentInfo: async () => ({ status: 'downloading' }),
     } as unknown as RdGateway;
-    await new TtStreamProvider(rd, caches, search).resolve(type as 'movie' | 'series', type === 'series' ? 'tt1234567:1:2' : 'tt1234567');
+    await new TtStreamProvider(rd, caches, { search }).resolve(type as 'movie' | 'series', type === 'series' ? 'tt1234567:1:2' : 'tt1234567');
     expect(rd.addMagnet).not.toHaveBeenCalled();
   } finally { vi.unstubAllGlobals(); }
 });
@@ -247,7 +247,7 @@ it('prefetches the next episode after an uncached series episode is queued', asy
       getTorrentInfo: vi.fn(async () => ({ status: 'downloading' })),
     } as unknown as RdGateway;
 
-    await new TtStreamProvider(rd, caches, search).resolve('series', 'tt1234567:1:2');
+    await new TtStreamProvider(rd, caches, { search }).resolve('series', 'tt1234567:1:2');
 
     expect(addedHashes).toContain(e2); // the episode being watched is queued
     expect(addedHashes).toContain(e3); // the next episode is prefetched
@@ -309,7 +309,7 @@ describe('TtStreamProvider cloud top-up', () => {
     };
 
     const caches = createCaches(3600);
-    const tt = new TtStreamProvider(rd, caches, new SearchService([provider], caches));
+    const tt = new TtStreamProvider(rd, caches, { search: new SearchService([provider], caches) });
     const resp = await tt.resolve('movie', 'tt1160419');
 
     expect(resp.streams.map(s => s.name).sort()).toEqual(['TB 1080P ⚡', 'TB 2160P ⚡', 'TB 720P ⚡']);
@@ -371,7 +371,7 @@ describe('per-language search', () => {
     };
 
     const caches = createCaches(3600);
-    const tt = new TtStreamProvider(rd, caches, new SearchService([provider], caches), null, ['hindi']);
+    const tt = new TtStreamProvider(rd, caches, { search: new SearchService([provider], caches), preferredLanguages: ['hindi'] });
     const resp = await tt.resolve('movie', 'tt1160419');
 
     expect(provider.search).toHaveBeenCalledWith('Dune Part One hindi');

@@ -15,6 +15,7 @@ import type { TorrentResult } from '../types.js';
 import { normalizeTitle, parseFilename } from '../meta/parser.js';
 import { torrentStreams } from './resolver.js';
 import { findCachedStreams, compareStreamCandidates } from './cacheProbe.js';
+import { CINEMETA_TIMEOUT_MS } from '../constants.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 
@@ -75,22 +76,39 @@ function yearsMatch({ torrentYear, metaYear }: YearOk): boolean {
  * cache-probing. Emits one `Stream` per playable file — cloud results first,
  * deduped by URL, and capped at `STREAM_TARGET`.
  */
+/** Optional dependencies and preferences for {@link TtStreamProvider}. */
+export interface TtStreamOptions {
+  /** Torrent-index search; when null, only cloud results are returned. */
+  search?: SearchService | null;
+  /** Persistent blocked-hash set; when null, negatives fall back to the `misc` cache. */
+  negatives?: NegativeStore | null;
+  /** Languages floated to the top and searched for explicitly. */
+  preferredLanguages?: string[];
+  /** Quality preferences: minimum resolution and source tokens to exclude. */
+  qualityFilters?: { minQuality?: string; excludeQuality?: string[] };
+}
+
 export class TtStreamProvider {
+  private search: SearchService | null;
+  private negativesStore: NegativeStore | null;
+  private preferredLanguages: string[];
+  private qualityFilters: { minQuality?: string; excludeQuality?: string[] };
+
   /**
    * @param rd Debrid gateway (Real-Debrid or TorBox) for cloud queries and probing.
    * @param caches TTL caches — `tmdb` for Cinemeta metadata, `misc` for the negative-hash set.
-   * @param search Torrent-index search; when null, only cloud results are returned.
-   * @param negativesStore Persistent blocked-hash set; when null, negatives fall back to the `misc` cache.
-   * @param preferredLanguages Languages floated to the top and searched for explicitly.
+   * @param options Optional services and preferences (search, negatives, languages, quality).
    */
   constructor(
     private rd: RdGateway,
     private caches: CacheSet,
-    private search: SearchService | null = null,
-    private negativesStore: NegativeStore | null = null,
-    private preferredLanguages: string[] = [],
-    private qualityFilters: { minQuality?: string; excludeQuality?: string[] } = {},
-  ) {}
+    options: TtStreamOptions = {},
+  ) {
+    this.search = options.search ?? null;
+    this.negativesStore = options.negatives ?? null;
+    this.preferredLanguages = options.preferredLanguages ?? [];
+    this.qualityFilters = options.qualityFilters ?? {};
+  }
 
   /** Fetch this id's name/year from Cinemeta, cached in the `tmdb` TTL cache. */
   private async cinemetaMeta(type: ContentType, ttId: string): Promise<{ name: string; year?: number } | null> {
@@ -99,7 +117,7 @@ export class TtStreamProvider {
     if (cached) return cached;
 
     try {
-      const res = await fetch(`${CINEMETA}/meta/${type}/${ttId}.json`, { signal: AbortSignal.timeout(8_000) });
+      const res = await fetch(`${CINEMETA}/meta/${type}/${ttId}.json`, { signal: AbortSignal.timeout(CINEMETA_TIMEOUT_MS) });
       if (!res.ok) return null;
       const data = (await res.json()) as CinemetaMeta;
       const m = data.meta;

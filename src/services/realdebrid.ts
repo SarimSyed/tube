@@ -3,6 +3,7 @@
 // surface as `RealDebridError` subclasses so callers can branch on them.
 import type { RdDownload, RdTorrent, RdTorrentSummary } from '../types.js';
 import { createHash } from 'node:crypto';
+import { RD_TIMEOUT_MS } from '../constants.js';
 
 // Real-Debrid REST API root (overridable via config for tests/mocks).
 const DEFAULT_BASE = 'https://api.real-debrid.com/rest/1.0';
@@ -96,7 +97,7 @@ async function rdFetch<T>(
     res = await fetch(`${base}${path}`, {
       ...init,
       // Real-Debrid can stall; abort after 15s if the caller didn't supply a signal.
-      signal: init?.signal ?? AbortSignal.timeout(15_000),
+      signal: init?.signal ?? AbortSignal.timeout(RD_TIMEOUT_MS),
       headers: {
         Authorization: `Bearer ${token}`,
         ...(init?.body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),

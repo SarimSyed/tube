@@ -6,6 +6,7 @@
  */
 import type { EnrichedMeta } from '../types.js';
 import { normalizeTitle } from '../meta/parser.js';
+import { UPSTREAM_TIMEOUT_MS } from '../constants.js';
 
 const BASE = 'https://api.themoviedb.org/3'; // REST API root.
 const IMAGE = 'https://image.tmdb.org/t/p'; // Image CDN; append `/{size}{path}`.
@@ -43,7 +44,7 @@ export class TmdbClient {
   async findByIdentifier(imdbId: string): Promise<EnrichedMeta | null> {
     const res = await fetch(
       `${BASE}/find/${imdbId}?external_source=imdb_id&api_key=${this.apiKey}`,
-      { signal: AbortSignal.timeout(10_000) },
+      { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -82,7 +83,7 @@ export class TmdbClient {
       if (target.kind === 'movie' && year) params.set('year', String(year));
       if (target.kind === 'series' && year) params.set('first_air_date_year', String(year));
 
-      const res = await fetch(`${BASE}/${target.path}?${params}`, { signal: AbortSignal.timeout(10_000) });
+      const res = await fetch(`${BASE}/${target.path}?${params}`, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
       if (!res.ok) continue;
       const data = (await res.json()) as { results?: TmdbResult[] };
       const hit = data.results?.find(r => {

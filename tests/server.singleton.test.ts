@@ -2,42 +2,59 @@
 // routes must be reachable so a tokenless `/manifest.json` install works end to
 // end. We point RD at a closed local port so the request fails fast (proving the
 // route is mounted — it returns a 500, not a 404) without any real debrid call.
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
+import { createApp } from '../src/app.js';
+
+let server: Server;
+let base: string;
+
+beforeAll(async () => {
+  // Singleton key set, debrid base pointed at a closed port for a quick refusal.
+  const app = createApp({
+    port: 7000,
+    rdApiBase: 'http://127.0.0.1:9',
+    torboxApiBase: null,
+    dataDir: '/tmp',
+    baseUrl: 'http://localhost:7000',
+    rdApiKey: 'singleton-test-key',
+    tmdbApiKey: null,
+    zileanUrl: null,
+    zileanApiKey: null,
+    torznabUrl: null,
+    torznabApiKey: null,
+    cacheTtlSeconds: 120,
+    includeUncached: true,
+    minQuality: null,
+    excludeQuality: [],
+    showLibraryCatalogs: false,
+    showSearchCatalogs: false,
+    addonId: 'community.tube',
+    addonName: 'Tube (Real-Debrid)',
+    addonDescription: 'desc',
+    version: '1.0.0',
+  });
+  await new Promise<void>((resolve) => {
+    server = app.listen(0, () => resolve());
+  });
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+  base = `http://127.0.0.1:${port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+async function get(path: string): Promise<{ status: number; json: unknown }> {
+  const res = await fetch(base + path, { redirect: 'manual' });
+  const text = await res.text();
+  let json: unknown;
+  try { json = JSON.parse(text); } catch { json = undefined; }
+  return { status: res.status, json };
+}
 
 describe('Tube singleton mode (RD_API_KEY set)', () => {
-  let server: Server;
-  let base: string;
-  let app: { listen: (...args: unknown[]) => Server };
-
-  beforeAll(async () => {
-    // Load the app fresh with the singleton key + an unreachable RD base so any
-    // backend call fails fast and locally.
-    vi.resetModules();
-    process.env.RD_API_KEY = 'singleton-test-key';
-    process.env.RD_API_BASE = 'http://127.0.0.1:9'; // closed port -> quick refusal
-    const mod = await import('../src/index.js') as { app: { listen: (...args: unknown[]) => Server } };
-    app = mod.app;
-    await new Promise<void>((resolve) => { server = app.listen(0, () => resolve()); });
-    const addr = server.address();
-    const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-    base = `http://127.0.0.1:${port}`;
-  });
-
-  afterAll(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    delete process.env.RD_API_KEY;
-    delete process.env.RD_API_BASE;
-  });
-
-  async function get(path: string): Promise<{ status: number; json: unknown }> {
-    const res = await fetch(base + path, { redirect: 'manual' });
-    const text = await res.text();
-    let json: unknown;
-    try { json = JSON.parse(text); } catch { json = undefined; }
-    return { status: res.status, json };
-  }
-
   it('serves the manifest tokenlessly', async () => {
     const r = await get('/manifest.json');
     expect(r.status).toBe(200);

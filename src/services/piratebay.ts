@@ -4,6 +4,7 @@
  */
 import type { TorrentProvider, TorrentResult } from '../types.js';
 import { parseFilename } from '../meta/parser.js';
+import { UPSTREAM_TIMEOUT_MS } from '../constants.js';
 
 /** One item from apibay.org's `q.php` JSON — numeric fields arrive as strings. */
 interface ApibayItem {
@@ -39,7 +40,7 @@ export class PirateBayProvider implements TorrentProvider {
       res = await fetch(`https://apibay.org/q.php?q=${encodeURIComponent(query)}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TubeStremioAddon/1.0)' },
         // Bound the request so a stalled upstream cannot leave the handler hanging.
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
     } catch (err) {
       console.warn(`[piratebay] request failed for "${query}":`, err instanceof Error ? err.message : err);

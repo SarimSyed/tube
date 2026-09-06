@@ -4,6 +4,7 @@
 // query URLs rather than a header on the file endpoint.
 import { createHash } from 'node:crypto';
 import { RealDebridError, type RdGateway } from './realdebrid.js';
+import { UPSTREAM_TIMEOUT_MS } from '../constants.js';
 
 // Pace TorBox API calls (shared across client instances) to avoid HTTP 429.
 let lastTorBoxRequest = 0;
@@ -60,7 +61,7 @@ export class TorBoxClient implements RdGateway {
         lastTorBoxRequest = Date.now();
         response = await fetch(`${this.baseUrl}${path}`, {
           ...init,
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
           headers: { Authorization: `Bearer ${this.token}`, ...init.headers },
         });
       } catch {

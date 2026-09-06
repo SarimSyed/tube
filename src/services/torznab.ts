@@ -5,6 +5,7 @@
  */
 import type { TorrentProvider, TorrentResult } from '../types.js';
 import { guessType, parseFilename } from '../meta/parser.js';
+import { UPSTREAM_TIMEOUT_MS } from '../constants.js';
 
 /**
  * Extract a `torznab:attr` value from an item's raw XML. Attribute order varies
@@ -42,7 +43,7 @@ export class TorznabProvider implements TorrentProvider {
     const url = `${this.baseUrl.replace(/\/$/, '')}/api?${params.toString()}`;
     let res: Response;
     try {
-      res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+      res = await fetch(url, { signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
     } catch (err) {
       console.warn(`[torznab] request failed for "${query}":`, err instanceof Error ? err.message : err);
       return [];

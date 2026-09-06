@@ -1,17 +1,44 @@
-// HTTP-level tests against the exported Express app. Importing `src/index.js`
-// must NOT bind the configured port (that only happens when index.ts is the
-// entry module), so this file can start the app itself on an ephemeral port.
-// These cover server-level behaviors that unit tests cannot reach: JSON error
-// bodies, the health endpoint, and the security posture of the tokenless
-// (RD_API_KEY singleton) routes, which must not be exposed when no key is set.
+// HTTP-level tests against a `createApp(config)` Express instance, started on an
+// ephemeral port. These cover server-level behaviors that unit tests cannot
+// reach: JSON error bodies, the health endpoint, and the security posture of the
+// tokenless (RD_API_KEY singleton) routes, which must not be exposed when no
+// key is configured.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Server } from 'node:http';
-import { app } from '../src/index.js';
+import { createApp } from '../src/app.js';
+import type { Config } from '../src/types.js';
+
+function cfg(): Config {
+  return {
+    port: 7000,
+    rdApiBase: null,
+    torboxApiBase: null,
+    dataDir: '/tmp',
+    baseUrl: 'http://localhost:7000',
+    rdApiKey: null,
+    tmdbApiKey: null,
+    zileanUrl: null,
+    zileanApiKey: null,
+    torznabUrl: null,
+    torznabApiKey: null,
+    cacheTtlSeconds: 120,
+    includeUncached: true,
+    minQuality: null,
+    excludeQuality: [],
+    showLibraryCatalogs: false,
+    showSearchCatalogs: false,
+    addonId: 'community.tube',
+    addonName: 'Tube (Real-Debrid)',
+    addonDescription: 'desc',
+    version: '1.0.0',
+  };
+}
 
 let server: Server;
 let base: string;
 
 beforeAll(async () => {
+  const app = createApp(cfg());
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
   });

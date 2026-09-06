@@ -7,6 +7,7 @@ import type { TmdbClient } from '../services/tmdb.js';
 import type { CacheSet } from '../services/cache.js';
 import { normalizeTitle } from './parser.js';
 import { singleFlight } from '../util.js';
+import { CINEMETA_TIMEOUT_MS } from '../constants.js';
 
 /** Words kept lowercase when not the first word of a title-cased string. */
 const SMALL_WORDS = new Set(['a', 'an', 'the', 'of', 'and', 'for', 'with', 'in', 'on', 'to', 'vs', 'at']);
@@ -78,7 +79,7 @@ export class MetaService {
    */
   async seriesMeta(title: string, year?: number, imdbId?: string): Promise<Meta | null> {
     const key = `series-episodes:${normalizeTitle(title)}:${year ?? ''}`;
-    const signal = AbortSignal.timeout(8_000);
+    const signal = AbortSignal.timeout(CINEMETA_TIMEOUT_MS);
     const matches = (m: { name?: string; releaseInfo?: string }) =>
       normalizeTitle(m.name ?? '') === normalizeTitle(title)
       && (!year || !m.releaseInfo || m.releaseInfo.match(/\d{4}/)?.[0] === String(year));
@@ -118,7 +119,7 @@ export class MetaService {
   private async cinemetaById(ttId: string, type: ContentType): Promise<EnrichedMeta | null> {
     return this.fetchCached(`cinemeta-meta:${ttId}`, async () => {
       try {
-        const res = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${ttId}.json`, { signal: AbortSignal.timeout(8_000) });
+        const res = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${ttId}.json`, { signal: AbortSignal.timeout(CINEMETA_TIMEOUT_MS) });
         if (!res.ok) return null;
         const m = (await res.json()) as { meta?: { name?: string; poster?: string | null; background?: string | null; year?: string | number; releaseInfo?: string; description?: string } };
         const meta = m.meta;
@@ -146,7 +147,7 @@ export class MetaService {
     return this.fetchCached(`cinemeta-search:${type}:${title.toLowerCase()}:${year ?? ''}`, async () => {
       try {
         const query = encodeURIComponent(title);
-        const res = await fetch(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${query}.json`, { signal: AbortSignal.timeout(8_000) });
+        const res = await fetch(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${query}.json`, { signal: AbortSignal.timeout(CINEMETA_TIMEOUT_MS) });
         if (!res.ok) return null;
         const data = (await res.json()) as {
           metas?: Array<{ id: string; name?: string; poster?: string | null; background?: string | null; releaseInfo?: string }>;
