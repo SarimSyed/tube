@@ -3,6 +3,7 @@
 // end. We point RD at a closed local port so the request fails fast (proving the
 // route is mounted — it returns a 500, not a 404) without any real debrid call.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app.js';
 
@@ -72,12 +73,21 @@ describe('Tube singleton mode (RD_API_KEY set)', () => {
 describe('Explicit download route (tokenless, TorBox download install)', () => {
   let dlServer: Server;
   let dlBase: string;
+  let mockProvider: Server;
 
   beforeAll(async () => {
+    // A tiny local TorBox stand-in that accepts any createtorrent call.
+    mockProvider = createServer((_req: unknown, res: any) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: { torrent_id: 123 } }));
+    });
+    await new Promise<void>((resolve) => mockProvider.listen(0, () => resolve()));
+    const maddr = mockProvider.address() as { port: number };
+
     const app = createApp({
       port: 7000,
       rdApiBase: null,
-      torboxApiBase: 'http://127.0.0.1:9', // closed port: add fails fast
+      torboxApiBase: `http://127.0.0.1:${maddr.port}`,
       dataDir: '/tmp',
       baseUrl: 'http://localhost:7000',
       rdApiKey: 'torbox-download:test-key',
@@ -106,12 +116,15 @@ describe('Explicit download route (tokenless, TorBox download install)', () => {
 
   afterAll(async () => {
     await new Promise<void>((resolve) => dlServer.close(() => resolve()));
+    await new Promise<void>((resolve) => mockProvider.close(() => resolve()));
   });
 
-  it('accepts a valid hash and redirects to the TorBox dashboard', async () => {
+  it('queues a valid hash and acknowledges without redirecting out of Stremio', async () => {
     const res = await fetch(`${dlBase}/download?hash=${'a'.repeat(40)}`, { redirect: 'manual' });
-    expect(res.status).toBe(302);
-    expect(res.headers.get('location')).toBe('https://torbox.app/dashboard');
+    expect(res.status).toBe(202);
+    expect(res.headers.get('location')).toBeNull(); // never opens the dashboard
+    const body = await res.json() as { queued?: boolean };
+    expect(body.queued).toBe(true);
   });
 
   it('rejects a malformed hash', async () => {

@@ -32,11 +32,11 @@ On `/configure`, choose **TorBox** and enable **Download when no cached stream i
 With this option enabled, when Tube cannot find a playable cached stream for a
 title it lists the uncached releases as **"Download ⬇" rows** (with quality,
 size and seeders) below the cached streams. Nothing is started just by opening
-a title — clicking one of those rows adds *that* release to your TorBox
-account and takes you to the TorBox dashboard. While it downloads, reopening
-the title shows a status row for it; reopen again once it finishes to play it.
-Tube prefers an existing cached stream and never submits an uncached torrent
-unless you click its download row.
+a title — clicking one of those rows adds *that* release to your TorBox account
+and confirms it. While it downloads, reopening the title shows a status row for
+it (linking the TorBox dashboard if you want to watch progress); reopen again
+once it finishes to play it. Tube prefers an existing cached stream and never
+submits an uncached torrent unless you click its download row.
 
 The default sends `add_only_if_cached=true`. Only the opted-in installs show
 download rows, and only the clicked release is submitted. No uncached torrent

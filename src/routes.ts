@@ -375,8 +375,9 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
 
   // Clicking a "Download (uncached)" row hits this route: it adds that exact
   // magnet to the user's TorBox account (download-enabled installs only) and
-  // sends them to the TorBox dashboard. Opening a title never does this on its
-  // own — only this explicit click does.
+  // acknowledges — it does NOT leave Stremio. Progress is surfaced on the
+  // reopen status row, which carries the TorBox dashboard link. Opening a title
+  // never does this on its own — only this explicit click does.
   const downloadHandler = async (req: Request, res: Response): Promise<void> => {
     const token = resolveToken(req);
     if (!token) {
@@ -396,10 +397,11 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     try {
       await rd.addMagnet(`magnet:?xt=urn:btih:${hash}`, false);
       console.log(`[download] queued ${hash.slice(0, 8)}…`);
+      res.status(202).json({ queued: true, hash, message: 'Download queued — reopen this title in Stremio when it finishes.' });
     } catch (err) {
       console.warn('[download] add failed:', err instanceof Error ? err.message : String(err));
+      res.status(502).json({ err: 'queue_failed', hint: 'TorBox could not queue the download right now; try again shortly.' });
     }
-    res.redirect(302, 'https://torbox.app/dashboard');
   };
   app.get('/:token/download', downloadHandler);
 
