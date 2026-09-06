@@ -100,3 +100,20 @@ it('offers the canonical language list as select options', () => {
   expect(p.html).toMatch(/<option value="malayalam">Malayalam<\/option>/);
   expect(p.html).toContain('Choose a language');
 });
+
+// The base URL is derived from the request Host header, so a hostile host must
+// not be able to break out of the inline <script> that embeds it.
+it('escapes <script>-breaking characters in a hostile base URL', () => {
+  const hostile = 'http://x/"></script><script>alert(1)</script>';
+  const html = renderConfigurePage(hostile);
+  // Only the real inline <script> block may exist; the hostile string must be
+  // neutralized into unicode escapes so no second closing tag is emitted.
+  expect((html.match(/<script>[\s\S]*?<\/script>/g) ?? []).length).toBe(1);
+  expect(html).toContain('\\u003c/script\\u003e');
+  expect(html).not.toContain(hostile);
+});
+
+it('still embeds the decoded value for a normal base URL', () => {
+  const html = renderConfigurePage('http://localhost:7000');
+  expect(html).toContain('const base = "http://localhost:7000";');
+});

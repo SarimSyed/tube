@@ -43,6 +43,7 @@ export class TmdbClient {
   async findByIdentifier(imdbId: string): Promise<EnrichedMeta | null> {
     const res = await fetch(
       `${BASE}/find/${imdbId}?external_source=imdb_id&api_key=${this.apiKey}`,
+      { signal: AbortSignal.timeout(10_000) },
     );
     if (!res.ok) return null;
     const data = (await res.json()) as {
@@ -81,7 +82,7 @@ export class TmdbClient {
       if (target.kind === 'movie' && year) params.set('year', String(year));
       if (target.kind === 'series' && year) params.set('first_air_date_year', String(year));
 
-      const res = await fetch(`${BASE}/${target.path}?${params}`);
+      const res = await fetch(`${BASE}/${target.path}?${params}`, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) continue;
       const data = (await res.json()) as { results?: TmdbResult[] };
       const hit = data.results?.find(r => {

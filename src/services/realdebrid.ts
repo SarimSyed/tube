@@ -95,13 +95,18 @@ async function rdFetch<T>(
   try {
     res = await fetch(`${base}${path}`, {
       ...init,
+      // Real-Debrid can stall; abort after 15s if the caller didn't supply a signal.
+      signal: init?.signal ?? AbortSignal.timeout(15_000),
       headers: {
         Authorization: `Bearer ${token}`,
         ...(init?.body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
         ...(init?.headers ?? {}),
       },
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new RealDebridError('Real-Debrid API request timed out', 504);
+    }
     throw new RealDebridError('Could not reach the Real-Debrid API', 502);
   }
 

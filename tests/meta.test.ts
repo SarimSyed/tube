@@ -42,3 +42,19 @@ it('selects matching metadata instead of an unrelated result with the same year'
   expect(meta.name).toBe('Example Movie');
   expect(meta.poster).toBe('https://example/correct.jpg');
 });
+
+it('shares one in-flight seriesMeta lookup across concurrent callers', async () => {
+  // Two requests for the same show arriving before anything is cached must issue
+  // a single catalog search + single episode fetch, not one set per caller.
+  const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(
+    url.includes('/catalog/')
+      ? { metas: [{ id: 'tt123', name: 'Pokemon' }] }
+      : { meta: { id: 'tt123', type: 'series', name: 'Pokemon', videos: [{ season: 1, episode: 1 }] } },
+  )));
+  vi.stubGlobal('fetch', fetchMock);
+  const service = new MetaService(null, createCaches(120));
+  const [a, b] = await Promise.all([service.seriesMeta('Pokemon'), service.seriesMeta('Pokemon')]);
+  expect(a?.videos?.length).toBe(1);
+  expect(b?.videos?.length).toBe(1);
+  expect(fetchMock.mock.calls.length).toBe(2); // catalog + meta, not duplicated
+});

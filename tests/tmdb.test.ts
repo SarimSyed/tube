@@ -14,3 +14,12 @@ it('chooses the matching title and year after unrelated hits', async () => {
   ]}))));
   expect(await new TmdbClient('test').search('Big Buck Bunny',2008,'movie')).toMatchObject({name:'Big Buck Bunny',year:2008});
 });
+
+it('bounds TMDB requests with an abort timeout', async () => {
+  const fetchMock = vi.fn(async () => new Response(JSON.stringify({ results: [] })));
+  vi.stubGlobal('fetch', fetchMock);
+  await new TmdbClient('test').search('anything');
+  const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+  expect(init).toBeTruthy();
+  expect(init!.signal).toBeInstanceOf(AbortSignal);
+});

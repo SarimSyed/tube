@@ -1,5 +1,29 @@
 // Small async helpers.
 
+// In-flight promises shared by `singleFlight`: keyed by an arbitrary string so
+// concurrent identical operations collapse into one upstream call.
+const flights = new Map<string, Promise<unknown>>();
+
+/**
+ * Coalesce concurrent invocations of `fn` for the same `key` into one shared
+ * promise (single-flight / thundering-herd protection). The first caller runs
+ * `fn`; later callers made before it settles receive the same promise. The
+ * entry is removed once settled (success or failure), so a failed attempt is
+ * retried on the next call. Wrap only the actual network/lookup work, not any
+ * surrounding TTL-cache logic that must remain atomic with it.
+ */
+export function singleFlight<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const existing = flights.get(key) as Promise<T> | undefined;
+  if (existing) return existing;
+  const pending = fn().finally(() => {
+    // Only the current owner clears the slot, so a newer caller that replaced
+    // this entry is never torn down early.
+    if (flights.get(key) === pending) flights.delete(key);
+  });
+  flights.set(key, pending);
+  return pending;
+}
+
 /**
  * Run `fn` over `items` with bounded concurrency, preserving order.
  *

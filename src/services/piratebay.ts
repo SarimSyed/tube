@@ -38,19 +38,29 @@ export class PirateBayProvider implements TorrentProvider {
     try {
       res = await fetch(`https://apibay.org/q.php?q=${encodeURIComponent(query)}`, {
         headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TubeStremioAddon/1.0)' },
+        // Bound the request so a stalled upstream cannot leave the handler hanging.
+        signal: AbortSignal.timeout(10_000),
       });
-    } catch {
+    } catch (err) {
+      console.warn(`[piratebay] request failed for "${query}":`, err instanceof Error ? err.message : err);
       return [];
     }
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.warn(`[piratebay] HTTP ${res.status} for "${query}"`);
+      return [];
+    }
 
     let data: unknown;
     try {
       data = await res.json();
     } catch {
+      console.warn(`[piratebay] non-JSON response for "${query}"`);
       return [];
     }
-    if (!Array.isArray(data)) return [];
+    if (!Array.isArray(data)) {
+      console.warn(`[piratebay] unexpected response shape for "${query}"`);
+      return [];
+    }
 
     const out: TorrentResult[] = [];
     for (const raw of data as ApibayItem[]) {

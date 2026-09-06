@@ -7,6 +7,7 @@ import type { TorrentProvider, TorrentResult } from '../types.js';
 import type { ContentType } from '../stremio.js';
 import type { CacheSet } from './cache.js';
 import { normalizeTitle } from '../meta/parser.js';
+import { singleFlight } from '../util.js';
 
 /** Split + normalize a title into its word tokens for fuzzy title matching. */
 export function normTokens(text: string): Set<string> {
@@ -103,32 +104,42 @@ export class SearchService {
     const cached = this.caches.search.get(cacheKey) as TorrentResult[] | undefined;
     if (cached) return cached;
 
-    const settled = await Promise.allSettled(
-      this.providers.map((p) => p.search(normalized)),
-    );
-    const combined: TorrentResult[] = [];
-    for (const s of settled) {
-      if (s.status === 'fulfilled') combined.push(...s.value);
-    }
+    // Single-flight the fan-out so concurrent identical queries share one
+    // provider round-trip, then cache only non-empty results (a transient
+    // provider outage must not pin an empty result for the whole TTL).
+    return singleFlight(cacheKey, async () => {
+      const settled = await Promise.allSettled(
+        this.providers.map((p) => p.search(normalized)),
+      );
+      const combined: TorrentResult[] = [];
+      const failures: string[] = [];
+      for (const s of settled) {
+        if (s.status === 'fulfilled') combined.push(...s.value);
+        else failures.push(s.reason instanceof Error ? s.reason.message : String(s.reason));
+      }
+      if (failures.length > 0) {
+        console.warn(`[search] ${failures.length}/${settled.length} provider(s) failed for "${normalized}": ${failures.join('; ')}`);
+      }
 
-    const queryTokens = [...normTokens(normalized)];
-    // Keep only results whose title covers every query token (prefix match, a
-    // loose word-boundary check), then restrict to the requested type.
-    const deduped = this.dedupe(combined).filter(r => {
-      if (opts.skipTitleFilter) return true;
-      // Include the year so a "Matrix 1999" query can also match on it.
-      const titleTokens = [...normTokens(`${r.title} ${r.year ?? ''}`)];
-      return queryTokens.every(q => titleTokens.some(t => t.startsWith(q)));
-    }).filter((r) =>
-      type === 'series' ? r.isSeries : !r.isSeries,
-    );
+      const queryTokens = [...normTokens(normalized)];
+      // Keep only results whose title covers every query token (prefix match, a
+      // loose word-boundary check), then restrict to the requested type.
+      const deduped = this.dedupe(combined).filter(r => {
+        if (opts.skipTitleFilter) return true;
+        // Include the year so a "Matrix 1999" query can also match on it.
+        const titleTokens = [...normTokens(`${r.title} ${r.year ?? ''}`)];
+        return queryTokens.every(q => titleTokens.some(t => t.startsWith(q)));
+      }).filter((r) =>
+        type === 'series' ? r.isSeries : !r.isSeries,
+      );
 
-    // Re-rank by query relevance (provider order can be poor).
-    const ranked = deduped.sort(
-      (a, b) => rankByRelevance(b, normalized) - rankByRelevance(a, normalized),
-    );
+      // Re-rank by query relevance (provider order can be poor).
+      const ranked = deduped.sort(
+        (a, b) => rankByRelevance(b, normalized) - rankByRelevance(a, normalized),
+      );
 
-    this.caches.search.set(cacheKey, ranked);
-    return ranked;
+      if (ranked.length > 0) this.caches.search.set(cacheKey, ranked);
+      return ranked;
+    });
   }
 }

@@ -91,4 +91,13 @@ describe('ZileanProvider', () => {
     await expect(provider.checkCached(['abc'])).resolves.toEqual(new Set());
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it('bounds both dmm search and checkCached requests with an abort timeout', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([{ info_hash: 'ABCDEF0123456789', is_cached: true }]), { status: 200 }));
+    const provider = new ZileanProvider('https://zilean.example', 'secret');
+    await provider.checkCached(['ABCDEF0123456789']);
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init).toBeTruthy();
+    expect(init!.signal).toBeInstanceOf(AbortSignal);
+  });
 });

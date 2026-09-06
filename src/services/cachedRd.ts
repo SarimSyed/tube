@@ -5,7 +5,17 @@
 import type { RdDownload, RdTorrent, RdTorrentSummary } from '../types.js';
 import { EndpointDisabledError, type RdGateway } from './realdebrid.js';
 import type { CacheSet } from './cache.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+
+/**
+ * Order- and case-independent cache key for an instant-availability check, so
+ * the same hash set always maps to one cache entry regardless of how the caller
+ * ordered it. Digested to keep cache keys short even for large result sets.
+ */
+function availabilityKey(hashes: string[]): string {
+  const sorted = [...hashes].map((h) => h.toLowerCase()).sort().join(',');
+  return createHash('sha1').update(sorted).digest('hex');
+}
 
 /**
  * TTL-cached wrapper around an `RdGateway` (RD or TorBox). Real-Debrid
@@ -115,17 +125,21 @@ export class CachedRealDebrid implements RdGateway {
 
   /**
    * Returns the set of hashes RD has cached, or `null` when availability cannot
-   * be determined (endpoint disabled for this account).
+   * be determined (endpoint disabled for this account). Results are cached per
+   * account+hash-set (order-insensitive) for the base TTL, so repeated checks
+   * of the same releases don't re-hit the provider's availability endpoint.
    */
   async instantAvailability(hashes: string[]): Promise<Set<string> | null> {
     if (hashes.length === 0) return new Set<string>();
     if (this.caches.misc.get(this.key('iaDisabled'))) return null;
 
+    const cacheKey = this.key(`ia:${availabilityKey(hashes)}`);
+    const cached = this.caches.instantAvailability.get(cacheKey) as Set<string> | undefined;
+    if (cached) return cached;
+
     try {
       const data = await this.rd.instantAvailability(hashes);
-      if (data) {
-        this.caches.instantAvailability.set(this.key(`batch:${hashes.slice(0, 20).join(',')}`), data);
-      }
+      if (data) this.caches.instantAvailability.set(cacheKey, data);
       return data;
     } catch (err) {
       if (err instanceof EndpointDisabledError) {

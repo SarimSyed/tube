@@ -66,4 +66,14 @@ describe('PirateBayProvider', () => {
     expect(results[0].isSeries).toBe(true);
     expect(results[0].seeders).toBe(10);
   });
+
+  it('bounds the request with an abort timeout so a hung upstream cannot stall the handler', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ name: 'x.2020.mkv', info_hash: 'ABCDEF', seeders: '1' }]), { status: 200 }),
+    );
+    await new PirateBayProvider().search('x');
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init).toBeTruthy();
+    expect(init!.signal).toBeInstanceOf(AbortSignal);
+  });
 });

@@ -73,17 +73,36 @@ export class ZileanProvider implements TorrentProvider {
     private apiKey?: string,
   ) {}
 
-  /** Query `POST /dmm/search`; returns [] on HTTP error or a non-array body. */
+  /** Query `POST /dmm/search`; logs and returns [] on network/HTTP/parse errors. */
   async search(query: string): Promise<TorrentResult[]> {
-    const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/dmm/search`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ QueryText: query }),
-    });
-    if (!res.ok) return [];
-    const data = (await res.json()) as ZileanTorrent[];
-    if (!Array.isArray(data)) return [];
-    return data.map(toResult).filter((r): r is TorrentResult => r !== null);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/dmm/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ QueryText: query }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } catch (err) {
+      console.warn(`[zilean] search failed for "${query}":`, err instanceof Error ? err.message : err);
+      return [];
+    }
+    if (!res.ok) {
+      console.warn(`[zilean] search HTTP ${res.status} for "${query}"`);
+      return [];
+    }
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      console.warn(`[zilean] non-JSON search response for "${query}"`);
+      return [];
+    }
+    if (!Array.isArray(data)) {
+      console.warn(`[zilean] unexpected search response shape for "${query}"`);
+      return [];
+    }
+    return (data as ZileanTorrent[]).map(toResult).filter((r): r is TorrentResult => r !== null);
   }
 
   /**
@@ -98,14 +117,19 @@ export class ZileanProvider implements TorrentProvider {
       const qs = new URLSearchParams({ hashes: hashes.join(',') });
       const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}/torrents/checkcached?${qs}`, {
         headers: { 'X-API-Key': this.apiKey },
+        signal: AbortSignal.timeout(10_000),
       });
-      if (!res.ok) return out;
+      if (!res.ok) {
+        console.warn(`[zilean] checkcached HTTP ${res.status}`);
+        return out;
+      }
       const items = (await res.json()) as Array<{ info_hash?: string; is_cached?: boolean | null }>;
       for (const it of items) {
         if (it.is_cached && it.info_hash) out.add(it.info_hash.toLowerCase());
       }
-    } catch {
-      // Non-fatal: fall back to probing all candidates.
+    } catch (err) {
+      // Non-fatal: fall back to probing all candidates — but log so outages show up.
+      console.warn('[zilean] checkcached failed:', err instanceof Error ? err.message : err);
     }
     return out;
   }

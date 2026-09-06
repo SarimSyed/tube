@@ -42,11 +42,15 @@ export class TorznabProvider implements TorrentProvider {
     const url = `${this.baseUrl.replace(/\/$/, '')}/api?${params.toString()}`;
     let res: Response;
     try {
-      res = await fetch(url);
-    } catch {
+      res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    } catch (err) {
+      console.warn(`[torznab] request failed for "${query}":`, err instanceof Error ? err.message : err);
       return [];
     }
-    if (!res.ok) return [];
+    if (!res.ok) {
+      console.warn(`[torznab] HTTP ${res.status} for "${query}"`);
+      return [];
+    }
     const xml = await res.text();
 
     const results: TorrentResult[] = [];

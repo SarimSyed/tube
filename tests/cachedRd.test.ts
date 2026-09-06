@@ -164,3 +164,38 @@ describe('CachedRealDebrid uncached submission safeguards', () => {
     expect(bobAdd).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('CachedRealDebrid instant-availability caching', () => {
+  // Gateway with a deterministic cacheKey (as real clients carry) and a
+  // countable instantAvailability implementation.
+  function gw(instantAvailability: RdGateway['instantAvailability']): RdGateway {
+    return { ...accountGateway('alice'), cacheKey: 'alice', instantAvailability };
+  }
+
+  it('serves a repeated identical check from cache without re-querying the provider', async () => {
+    const underlying = vi.fn(async () => new Set(['aaaa', 'bbbb']));
+    const rd = new CachedRealDebrid(gw(underlying), createCaches(300));
+    const hashes = ['aaaa', 'bbbb'];
+    await rd.instantAvailability(hashes);
+    await rd.instantAvailability(hashes);
+    expect(underlying).toHaveBeenCalledTimes(1);
+  });
+
+  it('is insensitive to the order of the same hash set', async () => {
+    const underlying = vi.fn(async () => new Set(['aaaa', 'bbbb']));
+    const rd = new CachedRealDebrid(gw(underlying), createCaches(300));
+    await rd.instantAvailability(['aaaa', 'bbbb']);
+    await rd.instantAvailability(['bbbb', 'aaaa']);
+    expect(underlying).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches each account separately', async () => {
+    const underlying = vi.fn(async () => new Set(['aaaa']));
+    const caches = createCaches(300);
+    const alice = new CachedRealDebrid(gw(underlying), caches);
+    const bob = new CachedRealDebrid({ ...gw(underlying), cacheKey: 'bob' }, caches);
+    await alice.instantAvailability(['aaaa']);
+    await bob.instantAvailability(['aaaa']);
+    expect(underlying).toHaveBeenCalledTimes(2);
+  });
+});

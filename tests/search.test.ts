@@ -38,3 +38,36 @@ it('excludes loose index matches that do not cover the requested title', async (
   const results=await new SearchService([provider],createCaches(120)).search('Big Buck Bunny','movie');
   expect(results.map(r=>r.title)).toEqual(['Big Buck Bunny']);
 });
+
+describe('SearchService result caching', () => {
+  it('re-queries the providers when the first attempt returned nothing', async () => {
+    // A transient outage must not leave an empty result pinned in the cache.
+    const provider: TorrentProvider = { name: 'fake', search: vi.fn().mockResolvedValue([]) };
+    const svc = new SearchService([provider], createCaches(3600));
+    await svc.search('something', 'movie');
+    await svc.search('something', 'movie');
+    expect(provider.search).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches a non-empty result across identical queries', async () => {
+    const provider: TorrentProvider = { name: 'fake', search: vi.fn().mockResolvedValue([r('The Matrix')]) };
+    const svc = new SearchService([provider], createCaches(3600));
+    await svc.search('the matrix', 'movie');
+    await svc.search('the matrix', 'movie');
+    expect(provider.search).toHaveBeenCalledTimes(1);
+  });
+
+  it('coalesces concurrent identical queries into a single provider call', async () => {
+    // Two requests that arrive together (before any result is cached) must share
+    // one provider fan-out instead of running two identical searches.
+    const provider: TorrentProvider = { name: 'fake', search: vi.fn().mockResolvedValue([r('The Matrix')]) };
+    const svc = new SearchService([provider], createCaches(3600));
+    const [a, b] = await Promise.all([
+      svc.search('the matrix', 'movie'),
+      svc.search('the matrix', 'movie'),
+    ]);
+    expect(provider.search).toHaveBeenCalledTimes(1);
+    expect(a[0].title).toBe('The Matrix');
+    expect(b[0].title).toBe('The Matrix');
+  });
+});

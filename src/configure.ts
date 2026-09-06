@@ -15,6 +15,23 @@ function languageOptions(): string {
 }
 
 /**
+ * Serialize a string as JSON safe to embed inside an inline `<script>`.
+ * `baseUrl` is usually derived from the request `Host` header (attacker
+ * controlled when `BASE_URL` isn't set), so a raw `<` would let a hostile host
+ * break out of the string and close the script tag. Escaping `<`, `>`, `&` and
+ * the JS line separators as unicode escapes keeps the value intact (JS string
+ * parsing decodes them back) without ever emitting a literal `</script>`.
+ */
+function scriptSafeJson(value: string): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+/**
  * Returns the full configure page HTML. `baseUrl` is injected as JSON into the
  * inline script so the client can build a self-referential install link from
  * the same origin the page was served from.
@@ -86,7 +103,7 @@ export function renderConfigurePage(baseUrl: string): string {
   </div>
 </div>
 <script>
-  const base = ${JSON.stringify(baseUrl)};
+  const base = ${scriptSafeJson(baseUrl)};
   const token = document.getElementById('token');
   const provider = document.getElementById('provider');
   const uncached = document.getElementById('uncached');

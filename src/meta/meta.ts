@@ -6,6 +6,7 @@ import type { ContentType, Meta, MetaPreview, Video } from '../stremio.js';
 import type { TmdbClient } from '../services/tmdb.js';
 import type { CacheSet } from '../services/cache.js';
 import { normalizeTitle } from './parser.js';
+import { singleFlight } from '../util.js';
 
 /** Words kept lowercase when not the first word of a title-cased string. */
 const SMALL_WORDS = new Set(['a', 'an', 'the', 'of', 'and', 'for', 'with', 'in', 'on', 'to', 'vs', 'at']);
@@ -48,6 +49,25 @@ export class MetaService {
   }
 
   /**
+   * Single-flight + TTL-cache wrapper for a metadata network lookup. Returns the
+   * cached value when present; otherwise runs `loader` once (concurrent callers
+   * for the same key share the in-flight promise) and caches a non-null result.
+   * Used by the Cinemeta lookups below so a thundering herd of the same title
+   * doesn't duplicate identical upstream requests.
+   */
+  private async fetchCached<T>(key: string, loader: () => Promise<T | null>): Promise<T | null> {
+    const hit = this.caches.tmdb.get(key) as T | undefined;
+    if (hit) return hit;
+    return singleFlight(key, async () => {
+      const again = this.caches.tmdb.get(key) as T | undefined;
+      if (again) return again;
+      const value = await loader();
+      if (value !== null && value !== undefined) this.caches.tmdb.set(key, value);
+      return value;
+    });
+  }
+
+  /**
    * Build a full series `Meta` with per-episode `videos`, sourced from the free
    * Cinemeta index. Torrent indexes often only describe a season pack, so the
    * episode list must come from an external catalog. `imdbId` is used directly
@@ -58,8 +78,6 @@ export class MetaService {
    */
   async seriesMeta(title: string, year?: number, imdbId?: string): Promise<Meta | null> {
     const key = `series-episodes:${normalizeTitle(title)}:${year ?? ''}`;
-    const cached = this.caches.tmdb.get(key) as Meta | undefined;
-    if (cached) return cached;
     const signal = AbortSignal.timeout(8_000);
     const matches = (m: { name?: string; releaseInfo?: string }) =>
       normalizeTitle(m.name ?? '') === normalizeTitle(title)
@@ -78,48 +96,46 @@ export class MetaService {
         }));
       return videos.length ? { ...meta, id, type: 'series', videos } : null;
     };
-    try {
-      // Index identifiers can point at an unrelated show; verify the title first.
-      let meta = imdbId ? await byId(imdbId) : null;
-      if (!meta) {
-        const res = await fetch(`https://v3-cinemeta.strem.io/catalog/series/top/search=${encodeURIComponent(title)}.json`, { signal });
-        if (!res.ok) return null;
-        const { metas } = await res.json() as { metas?: MetaPreview[] };
-        const match = metas?.find(matches);
-        if (match) meta = await byId(match.id);
+    return this.fetchCached(key, async () => {
+      try {
+        // Index identifiers can point at an unrelated show; verify the title first.
+        let meta = imdbId ? await byId(imdbId) : null;
+        if (!meta) {
+          const res = await fetch(`https://v3-cinemeta.strem.io/catalog/series/top/search=${encodeURIComponent(title)}.json`, { signal });
+          if (!res.ok) return null;
+          const { metas } = await res.json() as { metas?: MetaPreview[] };
+          const match = metas?.find(matches);
+          if (match) meta = await byId(match.id);
+        }
+        return meta;
+      } catch {
+        return null; // Indexed episodes remain usable when metadata is unavailable.
       }
-      if (meta) this.caches.tmdb.set(key, meta);
-      return meta;
-    } catch {
-      return null; // Indexed episodes remain usable when metadata is unavailable.
-    }
+    });
   }
 
   /** Fetch a single Cinemeta card by IMDb id (`tt…`) and cache it. */
   private async cinemetaById(ttId: string, type: ContentType): Promise<EnrichedMeta | null> {
-    const cacheKey = `cinemeta-meta:${ttId}`;
-    const cached = this.caches.tmdb.get(cacheKey) as EnrichedMeta | undefined;
-    if (cached) return cached;
-    try {
-      const res = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${ttId}.json`);
-      if (!res.ok) return null;
-      const m = (await res.json()) as { meta?: { name?: string; poster?: string | null; background?: string | null; year?: string | number; releaseInfo?: string; description?: string } };
-      const meta = m.meta;
-      if (!meta?.name) return null;
-      const rawYear = meta.year ?? meta.releaseInfo;
-      const yearMatch = String(rawYear ?? '').match(/(19|20)\d{2}/);
-      const out: EnrichedMeta = {
-        name: meta.name,
-        poster: meta.poster ?? null,
-        background: meta.background ?? null,
-        year: yearMatch ? Number.parseInt(yearMatch[0], 10) : undefined,
-        description: meta.description,
-      };
-      this.caches.tmdb.set(cacheKey, out);
-      return out;
-    } catch {
-      return null;
-    }
+    return this.fetchCached(`cinemeta-meta:${ttId}`, async () => {
+      try {
+        const res = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${ttId}.json`, { signal: AbortSignal.timeout(8_000) });
+        if (!res.ok) return null;
+        const m = (await res.json()) as { meta?: { name?: string; poster?: string | null; background?: string | null; year?: string | number; releaseInfo?: string; description?: string } };
+        const meta = m.meta;
+        if (!meta?.name) return null;
+        const rawYear = meta.year ?? meta.releaseInfo;
+        const yearMatch = String(rawYear ?? '').match(/(19|20)\d{2}/);
+        return {
+          name: meta.name,
+          poster: meta.poster ?? null,
+          background: meta.background ?? null,
+          year: yearMatch ? Number.parseInt(yearMatch[0], 10) : undefined,
+          description: meta.description,
+        };
+      } catch {
+        return null;
+      }
+    });
   }
 
   /**
@@ -127,32 +143,29 @@ export class MetaService {
    * whose normalized name matches, cached by a title/year key.
    */
   private async cinemetaByTitle(title: string, type: ContentType, year?: number): Promise<EnrichedMeta | null> {
-    const cacheKey = `cinemeta-search:${type}:${title.toLowerCase()}:${year ?? ''}`;
-    const cached = this.caches.tmdb.get(cacheKey) as EnrichedMeta | undefined;
-    if (cached) return cached;
-    try {
-      const query = encodeURIComponent(title);
-      const res = await fetch(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${query}.json`);
-      if (!res.ok) return null;
-      const data = (await res.json()) as {
-        metas?: Array<{ id: string; name?: string; poster?: string | null; background?: string | null; releaseInfo?: string }>;
-      };
-      const metas = data.metas ?? [];
-      if (metas.length === 0) return null;
-      const pick = metas.find(m => normalizeTitle(m.name ?? '') === normalizeTitle(title)
-        && (!year || !m.releaseInfo || m.releaseInfo.match(/\d{4}/)?.[0] === String(year)));
-      if (!pick?.name) return null;
-      const out: EnrichedMeta = {
-        name: pick.name,
-        poster: pick.poster ?? null,
-        background: pick.background ?? null,
-        year: year,
-      };
-      this.caches.tmdb.set(cacheKey, out);
-      return out;
-    } catch {
-      return null;
-    }
+    return this.fetchCached(`cinemeta-search:${type}:${title.toLowerCase()}:${year ?? ''}`, async () => {
+      try {
+        const query = encodeURIComponent(title);
+        const res = await fetch(`https://v3-cinemeta.strem.io/catalog/${type}/top/search=${query}.json`, { signal: AbortSignal.timeout(8_000) });
+        if (!res.ok) return null;
+        const data = (await res.json()) as {
+          metas?: Array<{ id: string; name?: string; poster?: string | null; background?: string | null; releaseInfo?: string }>;
+        };
+        const metas = data.metas ?? [];
+        if (metas.length === 0) return null;
+        const pick = metas.find(m => normalizeTitle(m.name ?? '') === normalizeTitle(title)
+          && (!year || !m.releaseInfo || m.releaseInfo.match(/\d{4}/)?.[0] === String(year)));
+        if (!pick?.name) return null;
+        return {
+          name: pick.name,
+          poster: pick.poster ?? null,
+          background: pick.background ?? null,
+          year: year,
+        };
+      } catch {
+        return null;
+      }
+    });
   }
 
   /**
