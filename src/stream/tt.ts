@@ -153,11 +153,13 @@ export class TtStreamProvider {
     const meta = await this.cinemetaMeta(type, ttId);
     if (!meta) return { streams: [] };
 
-    let torrents;
+    let torrents: RdTorrentSummary[] = [];
     try {
       torrents = await this.rd.listTorrents();
-    } catch {
-      return { streams: [] };
+    } catch (err) {
+      // Rate-limited or unreachable cloud: degrade to index-only rather than
+      // failing the whole request with no streams.
+      console.warn(`[tt] cloud list unavailable (${err instanceof Error ? err.message : String(err)}) — index only`);
     }
 
     const streams: Stream[] = [];
@@ -304,13 +306,29 @@ export class TtStreamProvider {
     // instantly, uncached ones are removed again so the account stays clean.
     // Rank by title/episode correctness first, then break ties with the shared
     // quality→seeders→size→language hierarchy.
-    const ranked = [...results].sort((a, b) => {
+    let ranked = [...results].sort((a, b) => {
       const byScore =
         this.scoreCandidate(b, type, metaYear, season, episode) -
         this.scoreCandidate(a, type, metaYear, season, episode);
       if (byScore !== 0) return byScore;
       return compareStreamCandidates(a, b, preferred);
     });
+
+    // A series search returns every release for the whole show (all episodes,
+    // packs, language dupes). For a specific episode request, drop anything that
+    // cannot deliver it — otherwise we'd probe dozens of unrelated releases and
+    // trip the debrid's rate limits. Single-episode matches and same-season
+    // packs (which contain the episode) are kept.
+    if (type === 'series' && season !== undefined && episode !== undefined) {
+      ranked = ranked.filter(
+        (r) => r.season === undefined || (r.season === season && (r.episode === undefined || r.episode === episode)),
+      );
+    }
+    if (ranked.length === 0) {
+      console.warn(`[tt] no releases for "${name}" match S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`);
+      return [];
+    }
+
     let candidates = ranked;
     // Prefilter to releases the debrid already has cached so we only add
     // torrents that resolve instantly — this is what keeps Tube as fast as

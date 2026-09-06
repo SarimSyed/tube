@@ -179,6 +179,52 @@ describe('TtStreamProvider index fallback', () => {
   });
 });
 
+it('probes only releases that can deliver the requested episode', async () => {
+  // Opening S01E01 must not probe the whole show's other episodes — that churn
+  // is what trips TorBox rate limits and leaves later requests with 0 streams.
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Show', year: '2020' } }))));
+  try {
+    const caches = createCaches(120);
+    const search = new SearchService([{
+      name: 'fake',
+      search: async () => [1, 2, 3, 4, 5].map((e) => ({
+        infoHash: String(e).repeat(40), title: 'Example Show', season: 1, episode: e, isSeries: true,
+        raw: `Example.Show.S01E0${e}.mkv`, source: 'zilean',
+      })),
+    }] as unknown as TorrentProvider, caches);
+
+    const added: string[] = [];
+    const rd = {
+      provider: 'torbox',
+      listTorrents: async () => [],
+      instantAvailability: async (hashes: string[]) => new Set(hashes),
+      addMagnet: vi.fn(async (magnet: string) => {
+        const h = (magnet.match(/btih:([0-9a-f]+)/i) || [])[1]!;
+        added.push(h);
+        return { id: `id-${h}`, uri: magnet };
+      }),
+      getTorrentInfo: vi.fn(async (id: string) => {
+        const hash = id.replace(/^id-/, '');
+        const ep = Number(hash[0]);
+        const raw = `Example.Show.S01E0${ep}.mkv`;
+        return {
+          id, filename: raw, hash, status: 'downloaded',
+          files: [{ id: 0, path: raw, bytes: 1, selected: 1 }],
+          links: [`torbox://${id}/0/${raw}`],
+        };
+      }),
+      unrestrict: vi.fn(async (l: string) => ({ download: `https://dl/${l.split('/').pop()}`, filename: l.split('/').pop() })),
+      selectAllFiles: async () => {},
+      deleteTorrent: vi.fn(async () => {}),
+    } as unknown as RdGateway;
+
+    const resp = await new TtStreamProvider(rd, caches, { search }).resolve('series', 'tt1234567:1:1');
+    expect(resp.streams.length).toBeGreaterThan(0);
+    expect(added).toHaveLength(1); // only the S01E01 release is probed, not E02-E05
+    expect(added[0]).toBe('1'.repeat(40));
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('uses Real-Debrid instant availability to skip uncached index results', async () => {
   // The authoritative RD availability check must stop Tube from add+poll+delete
   // probing candidates RD does not have cached (the slow path vs Torrentio).
