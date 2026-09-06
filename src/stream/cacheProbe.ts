@@ -74,13 +74,23 @@ function wordPattern(token: string): RegExp {
 }
 
 /**
- * True when a result passes the configured quality preferences. `minQuality`
- * drops known resolutions below the threshold (unknown resolutions are kept —
- * e.g. Zilean results without a resolution). `excludeQuality` drops results
- * whose raw title/quality mention any of the listed tokens (e.g. "hdcam").
+ * True when a result passes the configured quality preferences.
+ * `minQuality` / `maxResolution` drop known resolutions outside the allowed
+ * band (unknown resolutions are kept — e.g. Zilean results without one);
+ * `excludeQuality` drops results whose raw title/quality mention any of the
+ * listed tokens (e.g. "hdcam"); `maxSizeBytes` drops results larger than the
+ * per-install cap (unknown sizes are kept).
  */
-export function passesQualityFilters(result: TorrentResult, minQuality?: string, excludeQuality?: string[]): boolean {
+export function passesQualityFilters(
+  result: TorrentResult,
+  minQuality?: string,
+  excludeQuality?: string[],
+  maxResolution?: string,
+  maxSizeBytes?: number,
+): boolean {
   if (minQuality && result.quality && qualityRank(result.quality) < qualityRank(minQuality)) return false;
+  if (maxResolution && result.quality && qualityRank(result.quality) > qualityRank(maxResolution)) return false;
+  if (maxSizeBytes !== undefined && result.sizeBytes !== undefined && result.sizeBytes > maxSizeBytes) return false;
   if (excludeQuality && excludeQuality.length) {
     const hay = `${result.raw ?? ''} ${result.title ?? ''} ${result.quality ?? ''}`.toLowerCase();
     for (const token of excludeQuality) {
@@ -122,6 +132,10 @@ export interface ProbeOptions {
   minQuality?: string;
   /** Source/quality tokens to exclude (matched as whole words against the raw name). */
   excludeQuality?: string[];
+  /** Highest resolution to offer (e.g. "1080p") — per-install cap. */
+  maxResolution?: string;
+  /** Largest file to offer in bytes — per-install cap (unknown sizes kept). */
+  maxSizeBytes?: number;
 }
 
 /** Poll `fn` until `predicate` passes or `timeoutMs` elapses, returning the last value. */
@@ -159,9 +173,11 @@ export async function findCachedStreams(
   results: TorrentResult[],
   opts: ProbeOptions = {},
 ): Promise<Stream[]> {
-  // Apply configured quality preferences before any probing, so low-quality
+  // Apply configured quality preferences before any probing, so out-of-band
   // releases are neither added to the debrid nor returned as streams.
-  results = results.filter((r) => passesQualityFilters(r, opts.minQuality, opts.excludeQuality));
+  results = results.filter((r) => passesQualityFilters(
+    r, opts.minQuality, opts.excludeQuality, opts.maxResolution, opts.maxSizeBytes,
+  ));
 
   const preferred = (opts.preferredLanguages && opts.preferredLanguages.length
     ? opts.preferredLanguages

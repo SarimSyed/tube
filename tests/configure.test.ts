@@ -117,3 +117,16 @@ it('still embeds the decoded value for a normal base URL', () => {
   const html = renderConfigurePage('http://localhost:7000');
   expect(html).toContain('const base = "http://localhost:7000";');
 });
+
+it('encodes the per-install playback profile into the install link', () => {
+  const p = page();
+  p.get('provider').value = 'torbox';
+  p.get('token').value = 'example-key';
+  p.get('langs').value = 'hindi';
+  p.get('lang-add').events.click();
+  p.get('profile-quality').value = '1080p';
+  p.get('profile-gb').value = '4';
+  p.get('go').events.click();
+  // ';' and '=' are percent-encoded inside the path segment.
+  expect(p.get('url').href).toBe('http://localhost:7000/torbox%3Aexample-key~hindi%3Bmaxres%3D1080p%3Bmaxgb%3D4/manifest.json');
+});

@@ -62,4 +62,17 @@ describe('passesQualityFilters', () => {
   it('passes everything when no filters are configured', () => {
     expect(passesQualityFilters(r({ quality: '720p' }))).toBe(true);
   });
+
+  it('drops a known resolution above the per-install maximum', () => {
+    expect(passesQualityFilters(r({ quality: '2160p' }), undefined, undefined, '1080p')).toBe(false);
+    expect(passesQualityFilters(r({ quality: '1080p' }), undefined, undefined, '1080p')).toBe(true);
+    expect(passesQualityFilters(r({}), undefined, undefined, '1080p')).toBe(true); // unknown kept
+  });
+
+  it('drops a file larger than the per-install size cap and keeps unknown sizes', () => {
+    const cap = 4 * 1024 ** 3;
+    expect(passesQualityFilters(r({ quality: '2160p', sizeBytes: 6 * 1024 ** 3 }), undefined, undefined, undefined, cap)).toBe(false);
+    expect(passesQualityFilters(r({ quality: '2160p', sizeBytes: 2 * 1024 ** 3 }), undefined, undefined, undefined, cap)).toBe(true);
+    expect(passesQualityFilters(r({}), undefined, undefined, undefined, cap)).toBe(true); // unknown kept
+  });
 });

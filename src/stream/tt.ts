@@ -81,6 +81,20 @@ function yearsMatch({ torrentYear, metaYear }: YearOk): boolean {
  * cache-probing. Emits one `Stream` per playable file — cloud results first,
  * deduped by URL, and capped at `STREAM_TARGET`.
  */
+/** Quality preferences for a request: server defaults + per-install profile. */
+export interface QualityFilters {
+  /** Drop known resolutions below this (server config). */
+  minQuality?: string;
+  /** Drop results whose raw name mentions any token (server config). */
+  excludeQuality?: string[];
+  /** Highest resolution to offer (per-install cap). */
+  maxResolution?: string;
+  /** Largest file to offer in bytes (per-install cap). */
+  maxSizeBytes?: number;
+  /** When true, order the final picker smallest-file-first. */
+  smallerFirst?: boolean;
+}
+
 /** Optional dependencies and preferences for {@link TtStreamProvider}. */
 export interface TtStreamOptions {
   /** Torrent-index search; when null, only cloud results are returned. */
@@ -90,14 +104,14 @@ export interface TtStreamOptions {
   /** Languages floated to the top and searched for explicitly. */
   preferredLanguages?: string[];
   /** Quality preferences: minimum resolution and source tokens to exclude. */
-  qualityFilters?: { minQuality?: string; excludeQuality?: string[] };
+  qualityFilters?: QualityFilters;
 }
 
 export class TtStreamProvider {
   private search: SearchService | null;
   private negativesStore: NegativeStore | null;
   private preferredLanguages: string[];
-  private qualityFilters: { minQuality?: string; excludeQuality?: string[] };
+  private qualityFilters: QualityFilters;
 
   /**
    * @param rd Debrid gateway (Real-Debrid or TorBox) for cloud queries and probing.
@@ -234,6 +248,12 @@ export class TtStreamProvider {
       seen.add(s.url);
       return true;
     });
+    // Data-saver installs list the smallest playable file first.
+    if (this.qualityFilters.smallerFirst) {
+      deduped.sort(
+        (a, b) => (a.behaviorHints?.videoSize ?? Number.MAX_SAFE_INTEGER) - (b.behaviorHints?.videoSize ?? Number.MAX_SAFE_INTEGER),
+      );
+    }
     return { streams: deduped.slice(0, STREAM_TARGET) };
   }
 
@@ -371,6 +391,8 @@ export class TtStreamProvider {
         preferredLanguages: this.preferredLanguages.length ? this.preferredLanguages : undefined,
         minQuality: this.qualityFilters.minQuality,
         excludeQuality: this.qualityFilters.excludeQuality,
+        maxResolution: this.qualityFilters.maxResolution,
+        maxSizeBytes: this.qualityFilters.maxSizeBytes,
         canDownload: r => normalizeTitle(r.title) === normalizeTitle(name)
           && r.isSeries === (type === 'series')
           && (type !== 'movie' || yearsMatch({ torrentYear: r.year, metaYear }))

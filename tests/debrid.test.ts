@@ -2,7 +2,7 @@
 // torbox-download: / plain RD), the preferredLanguages suffix, and how the
 // manifest differs between Real-Debrid and TorBox installs.
 import { afterEach, expect, it, vi } from 'vitest';
-import { createDebridClient, preferredLanguages } from '../src/services/debrid.js';
+import { createDebridClient, parseCredentialPrefs, preferredLanguages } from '../src/services/debrid.js';
 import { buildManifest } from '../src/manifest.js';
 import { loadConfig } from '../src/config.js';
 import { CachedRealDebrid } from '../src/services/cachedRd.js';
@@ -73,4 +73,23 @@ it('parses preferred languages from the credential suffix and keeps providers wo
   expect(createDebridClient('torbox:tok~hindi,tamil', config).provider).toBe('torbox');
   expect(createDebridClient('torbox-download:tok~hindi', config).allowUncached).toBe(true);
   expect(createDebridClient('tok~hindi', config).provider).toBe('realdebrid');
+});
+
+it('parses per-install network profile knobs from the credential suffix', () => {
+  expect(parseCredentialPrefs('torbox:tok~hindi,tamil;maxres=1080p;maxgb=2')).toEqual({
+    languages: ['hindi', 'tamil'],
+    maxResolution: '1080p',
+    maxSizeBytes: 2 * 1024 ** 3,
+  });
+  // Old installs without profile knobs still parse as before.
+  expect(parseCredentialPrefs('torbox-download:tok~hindi')).toEqual({ languages: ['hindi'] });
+  expect(parseCredentialPrefs('tok')).toEqual({ languages: [] });
+  // Case-insensitive and fractionally-sized caps.
+  expect(parseCredentialPrefs('tok~maxres=720P;maxgb=1.5')).toEqual({
+    languages: [], maxResolution: '720p', maxSizeBytes: Math.round(1.5 * 1024 ** 3),
+  });
+  // Only the language section feeds preferredLanguages; profile knobs are kept apart.
+  expect(preferredLanguages('tok~hindi;maxres=1080p')).toEqual(['hindi']);
+  // Garbage values are ignored rather than applied.
+  expect(parseCredentialPrefs('tok~maxres=8k-ultra;maxgb=banana')).toEqual({ languages: [] });
 });

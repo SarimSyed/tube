@@ -16,7 +16,7 @@ import { CINEMETA_TIMEOUT_MS, DOWNLOADS_CATALOG, LIBRARY_CATALOG, SEARCH_CATALOG
 import { buildManifest } from './manifest.js';
 import { renderConfigurePage } from './configure.js';
 import { RealDebridError } from './services/realdebrid.js';
-import { createDebridClient, preferredLanguages } from './services/debrid.js';
+import { createDebridClient, parseCredentialPrefs } from './services/debrid.js';
 import { CachedRealDebrid } from './services/cachedRd.js';
 import type { CacheSet } from './services/cache.js';
 import type { SearchService } from './services/search.js';
@@ -330,15 +330,23 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     }
     const rd = clientFor(token);
     const negatives = rd.provider === 'torbox' ? torboxNegatives : negativeStore;
-    const langs = preferredLanguages(token);
-    const resolver = new StreamResolver(rd, { search: searchService, caches, negatives, preferredLanguages: langs });
+    const prefs = parseCredentialPrefs(token);
+    const resolver = new StreamResolver(rd, { search: searchService, caches, negatives, preferredLanguages: prefs.languages });
+    // Per-install network profile from the install URL: cap resolution/size and,
+    // when a size cap is set, list the smallest playable file first.
+    const profile = {
+      maxResolution: prefs.maxResolution,
+      maxSizeBytes: prefs.maxSizeBytes,
+      smallerFirst: prefs.maxSizeBytes !== undefined,
+    };
     const ttProvider = new TtStreamProvider(rd, caches, {
       search: searchService,
       negatives,
-      preferredLanguages: langs,
+      preferredLanguages: prefs.languages,
       qualityFilters: {
         minQuality: config.minQuality ?? undefined,
         excludeQuality: config.excludeQuality,
+        ...profile,
       },
     });
 

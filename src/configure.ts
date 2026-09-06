@@ -91,6 +91,16 @@ export function renderConfigurePage(baseUrl: string): string {
   </div>
   <div class="chips" id="lang-chips"></div>
   <p class="hint">Pick the languages that should surface first in your stream list; first added has highest priority. Leave empty to prefer Hindi / Dual / Multi.</p>
+  <label for="profile-quality">Playback profile — max resolution (per install)</label>
+  <select id="profile-quality">
+    <option value="" selected>No limit</option>
+    <option value="2160p">Up to 2160p / 4K</option>
+    <option value="1080p">Up to 1080p</option>
+    <option value="720p">Up to 720p</option>
+  </select>
+  <label for="profile-gb">Max file size in GB (optional)</label>
+  <input id="profile-gb" type="text" autocomplete="off" inputmode="decimal" placeholder="e.g. 4 — smaller files listed first" />
+  <p class="hint">This profile is saved per install: add the “small files” link on devices on slow networks and a separate unlimited link at home.</p>
   <button id="go">Generate install link</button>
   <div class="error" id="err" role="alert">Please paste your provider's API token.</div>
 
@@ -114,6 +124,8 @@ export function renderConfigurePage(baseUrl: string): string {
   const langs = document.getElementById('langs');
   const langAdd = document.getElementById('lang-add');
   const langChips = document.getElementById('lang-chips');
+  const profileQuality = document.getElementById('profile-quality');
+  const profileGb = document.getElementById('profile-gb');
   const chosen = []; // canonical language keys, in priority order (first = top)
 
   function renderChips() {
@@ -142,8 +154,13 @@ export function renderConfigurePage(baseUrl: string): string {
     if (!t) { err.style.display = 'block'; result.style.display = 'none'; return; }
     err.style.display = 'none';
     const credential = provider.value === 'torbox' ? (uncached.checked ? 'torbox-download:' : 'torbox:') + t : t;
-    const withLangs = credential + (chosen.length ? '~' + chosen.join(',') : '');
-    const manifest = base + '/' + encodeURIComponent(withLangs) + '/manifest.json';
+    const prefs = [];
+    if (chosen.length) prefs.push(chosen.join(','));
+    if (profileQuality.value) prefs.push('maxres=' + profileQuality.value);
+    const gb = Number.parseFloat(profileGb.value);
+    if (Number.isFinite(gb) && gb > 0) prefs.push('maxgb=' + String(gb));
+    const withPrefs = credential + (prefs.length ? '~' + prefs.join(';') : '');
+    const manifest = base + '/' + encodeURIComponent(withPrefs) + '/manifest.json';
     install.href = 'stremio://' + manifest.replace(/^https?:\\/\\//, '');
     url.href = manifest;
     url.textContent = manifest;
@@ -157,6 +174,8 @@ export function renderConfigurePage(baseUrl: string): string {
   });
   uncached.addEventListener('change', () => { result.style.display = 'none'; });
   token.addEventListener('keydown', (e) => { if (e.key === 'Enter') generate(); });
+  profileQuality.addEventListener('change', () => { result.style.display = 'none'; });
+  profileGb.addEventListener('input', () => { result.style.display = 'none'; });
   langAdd.addEventListener('click', () => {
     const v = langs.value;
     if (v && !chosen.includes(v)) {
