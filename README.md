@@ -117,7 +117,9 @@ URL).
 Torrent discovery from standard titles and the optional separate search catalog uses these sources:
 
 - **Built-in**: The Pirate Bay (apibay.org JSON API) is enabled by default — live
-  releases with seeder counts and IMDb ids, no setup required.
+  releases with seeder counts and IMDb ids, no setup required. YTS (yts.mx) is
+  also enabled by default for dedicated movie coverage (quality, seeders, size,
+  IMDb ids).
 - **Bundled**: enable the `search` compose profile above — it runs the published,
   actively-maintained Zilean image (SolidRhino line) plus PostgreSQL.
 - **Any other Zilean instance**: set `ZILEAN_URL` to it.
@@ -241,6 +243,8 @@ Options, in increasing order of effort:
 | `TORZNAB_URL` | *(empty)* | Jackett/Prowlarr Torznab endpoint |
 | `TORZNAB_API_KEY` | *(empty)* | Torznab API key |
 | `INCLUDE_UNCACHED` | `true` | List uncached search titles too (cached ones stay first); playback of uncached still requires a ready video |
+| `MIN_QUALITY` | *(empty)* | Drop standard-title releases below this resolution (e.g. `1080p`) |
+| `EXCLUDE_QUALITY` | *(empty)* | Comma-separated source tokens to hide (e.g. `hdcam,cam,ts`) |
 | `CACHE_TTL_SECONDS` | `120` | TTL for cached Real-Debrid/TMDB responses |
 
 ## Development

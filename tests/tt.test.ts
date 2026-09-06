@@ -219,6 +219,41 @@ it.each([
   } finally { vi.unstubAllGlobals(); }
 });
 
+it('prefetches the next episode after an uncached series episode is queued', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Show', year: '2020' } }))));
+  try {
+    const e2 = '2'.repeat(40);
+    const e3 = '3'.repeat(40);
+    const caches = createCaches(120);
+    const search = new SearchService([{
+      name: 'fixture',
+      search: async () => [
+        { infoHash: e2, title: 'Example Show', season: 1, episode: 2, isSeries: true, raw: 'Example.Show.S01E02.mkv', source: 'zilean' },
+        { infoHash: e3, title: 'Example Show', season: 1, episode: 3, isSeries: true, raw: 'Example.Show.S01E03.mkv', source: 'zilean' },
+      ],
+    }] as unknown as TorrentProvider, caches);
+
+    const addedHashes: string[] = [];
+    const rd = {
+      provider: 'torbox',
+      allowUncached: true,
+      listTorrents: async () => [],
+      instantAvailability: async () => new Set(),
+      addMagnet: vi.fn(async (magnet: string) => {
+        const hash = (magnet.match(/btih:([0-9a-f]+)/i) || [])[1]!;
+        addedHashes.push(hash);
+        return { id: `id-${hash}`, uri: magnet };
+      }),
+      getTorrentInfo: vi.fn(async () => ({ status: 'downloading' })),
+    } as unknown as RdGateway;
+
+    await new TtStreamProvider(rd, caches, search).resolve('series', 'tt1234567:1:2');
+
+    expect(addedHashes).toContain(e2); // the episode being watched is queued
+    expect(addedHashes).toContain(e3); // the next episode is prefetched
+  } finally { vi.unstubAllGlobals(); }
+});
+
 describe('TtStreamProvider cloud top-up', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 

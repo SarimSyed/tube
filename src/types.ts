@@ -82,7 +82,7 @@ export interface TorrentResult {
   imdbId?: string;
   seeders?: number;
   raw: string;
-  source: 'zilean' | 'torznab' | 'piratebay';
+  source: 'zilean' | 'torznab' | 'piratebay' | 'yts';
 }
 
 /** TMDB metadata used to enrich metas. */
@@ -131,6 +131,10 @@ export interface Config {
   cacheTtlSeconds: number;
   /** Whether to include search results not yet cached on the debrid. */
   includeUncached: boolean;
+  /** Minimum resolution label (e.g. "1080p") below which results are dropped. */
+  minQuality: string | null;
+  /** Source/quality tokens to exclude (e.g. ["hdcam", "cam"]). */
+  excludeQuality: string[];
   /** Whether to expose the library/downloads cloud catalogs. */
   showLibraryCatalogs: boolean;
   /** Whether to expose the search catalog. */

@@ -14,7 +14,7 @@ import type { ContentType, Stream, StreamResponse } from '../stremio.js';
 import type { TorrentResult } from '../types.js';
 import { normalizeTitle, parseFilename } from '../meta/parser.js';
 import { torrentStreams } from './resolver.js';
-import { findCachedStreams } from './cacheProbe.js';
+import { findCachedStreams, compareStreamCandidates } from './cacheProbe.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
 
@@ -89,6 +89,7 @@ export class TtStreamProvider {
     private search: SearchService | null = null,
     private negativesStore: NegativeStore | null = null,
     private preferredLanguages: string[] = [],
+    private qualityFilters: { minQuality?: string; excludeQuality?: string[] } = {},
   ) {}
 
   /** Fetch this id's name/year from Cinemeta, cached in the `tmdb` TTL cache. */
@@ -98,7 +99,7 @@ export class TtStreamProvider {
     if (cached) return cached;
 
     try {
-      const res = await fetch(`${CINEMETA}/meta/${type}/${ttId}.json`);
+      const res = await fetch(`${CINEMETA}/meta/${type}/${ttId}.json`, { signal: AbortSignal.timeout(8_000) });
       if (!res.ok) return null;
       const data = (await res.json()) as CinemetaMeta;
       const m = data.meta;
@@ -263,11 +264,15 @@ export class TtStreamProvider {
 
     // Best candidates first, then probe each against RD: cached ones stream
     // instantly, uncached ones are removed again so the account stays clean.
-    const ranked = [...results].sort(
-      (a, b) =>
+    // Rank by title/episode correctness first, then break ties with the shared
+    // quality→seeders→size→language hierarchy.
+    const ranked = [...results].sort((a, b) => {
+      const byScore =
         this.scoreCandidate(b, type, metaYear, season, episode) -
-        this.scoreCandidate(a, type, metaYear, season, episode),
-    );
+        this.scoreCandidate(a, type, metaYear, season, episode);
+      if (byScore !== 0) return byScore;
+      return compareStreamCandidates(a, b, preferred);
+    });
     let candidates = ranked;
     // Prefilter to the ones the index already knows are cached (DMM data), so we
     // only add torrents that are likely instant — avoids RD add-throttling.
@@ -292,18 +297,57 @@ export class TtStreamProvider {
       const streams = await findCachedStreams(this.rd, candidates, {
         season, episode, negatives,
         preferredLanguages: this.preferredLanguages.length ? this.preferredLanguages : undefined,
+        minQuality: this.qualityFilters.minQuality,
+        excludeQuality: this.qualityFilters.excludeQuality,
         canDownload: r => normalizeTitle(r.title) === normalizeTitle(name)
           && r.isSeries === (type === 'series')
           && (type !== 'movie' || yearsMatch({ torrentYear: r.year, metaYear }))
           && (season === undefined || r.season === undefined || r.season === season)
           && (episode === undefined || r.episode === undefined || r.episode === episode),
       });
+      // Binge-watching support: when this series episode was itself queued as an
+      // uncached download (a status entry has no playable url), also queue E+1.
+      if (type === 'series' && this.rd.allowUncached && streams.some((s) => !s.url)) {
+        await this.queueNextEpisode(results, season, episode);
+      }
       if (this.negativesStore) this.negativesStore.saveSoon();
       else this.caches.misc.set(negKey, negatives);
       return streams;
     } catch (err) {
       console.warn('[tt] index probe failed:', err instanceof Error ? err.message : err);
       return [];
+    }
+  }
+
+  /**
+   * Queue the next episode (SxE+1) of a series while the user binge-watches.
+   * Reuses the same add-magnet path (and its in-flight dedup) as the normal
+   * uncached flow; skips anything already in the cloud and never fires for
+   * movies or when downloads are off. Best-effort: a failure is only logged.
+   */
+  private async queueNextEpisode(results: TorrentResult[], season?: number, episode?: number): Promise<void> {
+    if (season === undefined || episode === undefined) return;
+    const next = episode + 1;
+    const preferred = this.preferredLanguages.length ? this.preferredLanguages : undefined;
+    const candidates = results
+      .filter((r) => r.isSeries && r.season === season && r.episode === next && r.infoHash)
+      .sort((a, b) => compareStreamCandidates(a, b, preferred));
+    if (candidates.length === 0) return;
+
+    let existing = new Set<string>();
+    try {
+      existing = new Set((await this.rd.listTorrents()).map((t) => t.hash.toLowerCase()));
+    } catch {
+      // Unknown cloud state — still safe to proceed; addMagnet dedups in-flight.
+    }
+    const pick = candidates.find((r) => !existing.has(r.infoHash)) ?? candidates[0];
+    if (!pick || existing.has(pick.infoHash)) return;
+
+    try {
+      await this.rd.addMagnet(`magnet:?xt=urn:btih:${pick.infoHash}`, false);
+      console.log(`[tt] prefetched next episode S${String(season).padStart(2, '0')}E${String(next).padStart(2, '0')} (${pick.infoHash.slice(0, 8)}…)`);
+    } catch (err) {
+      console.warn('[tt] next-episode prefetch failed:', err instanceof Error ? err.message : String(err));
     }
   }
 }

@@ -29,9 +29,63 @@ const MAX_NEW_DOWNLOADS = 3;
 const QUALITY_RANK: Record<string, number> = {
   '4320p': 6, '2160p': 5, '4k': 5, '1440p': 4, '1080p': 3, '720p': 2, '480p': 1, '360p': 0,
 };
-function qualityRank(q?: string): number {
+/** Map a quality label to a comparable rank; unknown/absent labels sort last. */
+export function qualityRank(q?: string): number {
   if (!q) return -1;
   return QUALITY_RANK[q.toLowerCase()] ?? -1;
+}
+
+/** True when a result's parsed filename carries one of the (normalized) languages. */
+export function hasPreferredLanguage(result: TorrentResult, preferred: string[]): boolean {
+  return parseFilename(result.raw || result.title).languages
+    .some((l) => preferred.includes(normalizeLanguage(l)));
+}
+
+/**
+ * Deterministic comparator for torrent candidates: quality, then seeders, then
+ * size, then preferred language. Returns a negative number when `a` should sort
+ * before `b` (i.e. `a` is better). Callers that already rank by title/episode
+ * correctness can use this as their tie-break so the picker order is stable.
+ */
+export function compareStreamCandidates(a: TorrentResult, b: TorrentResult, preferredLanguages?: string[]): number {
+  const preferred = preferredLanguages && preferredLanguages.length
+    ? preferredLanguages.map(normalizeLanguage)
+    : undefined;
+
+  const byQuality = qualityRank(b.quality) - qualityRank(a.quality);
+  if (byQuality !== 0) return byQuality;
+  const bySeeders = (b.seeders ?? 0) - (a.seeders ?? 0);
+  if (bySeeders !== 0) return bySeeders;
+  const bySize = (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0);
+  if (bySize !== 0) return bySize;
+  if (preferred) {
+    const aPref = hasPreferredLanguage(a, preferred) ? 1 : 0;
+    const bPref = hasPreferredLanguage(b, preferred) ? 1 : 0;
+    if (aPref !== bPref) return bPref - aPref;
+  }
+  return 0;
+}
+
+/** Build a literal whole-word RegExp for a token (metacharacters escaped). */
+function wordPattern(token: string): RegExp {
+  return new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`);
+}
+
+/**
+ * True when a result passes the configured quality preferences. `minQuality`
+ * drops known resolutions below the threshold (unknown resolutions are kept —
+ * e.g. Zilean results without a resolution). `excludeQuality` drops results
+ * whose raw title/quality mention any of the listed tokens (e.g. "hdcam").
+ */
+export function passesQualityFilters(result: TorrentResult, minQuality?: string, excludeQuality?: string[]): boolean {
+  if (minQuality && result.quality && qualityRank(result.quality) < qualityRank(minQuality)) return false;
+  if (excludeQuality && excludeQuality.length) {
+    const hay = `${result.raw ?? ''} ${result.title ?? ''} ${result.quality ?? ''}`.toLowerCase();
+    for (const token of excludeQuality) {
+      if (wordPattern(token.toLowerCase()).test(hay)) return false;
+    }
+  }
+  return true;
 }
 
 /** Tunables for `findCachedStreams`; every field is optional with sane defaults. */
@@ -58,6 +112,10 @@ export interface ProbeOptions {
   preferredLanguages?: string[];
   /** Require a confident title/episode match before starting a background download. */
   canDownload?: (result: TorrentResult) => boolean;
+  /** Minimum resolution (e.g. "1080p"); unknown qualities are kept. */
+  minQuality?: string;
+  /** Source/quality tokens to exclude (matched as whole words against the raw name). */
+  excludeQuality?: string[];
 }
 
 /** Poll `fn` until `predicate` passes or `timeoutMs` elapses, returning the last value. */
@@ -95,11 +153,14 @@ export async function findCachedStreams(
   results: TorrentResult[],
   opts: ProbeOptions = {},
 ): Promise<Stream[]> {
+  // Apply configured quality preferences before any probing, so low-quality
+  // releases are neither added to the debrid nor returned as streams.
+  results = results.filter((r) => passesQualityFilters(r, opts.minQuality, opts.excludeQuality));
+
   const preferred = (opts.preferredLanguages && opts.preferredLanguages.length
     ? opts.preferredLanguages
     : ['hindi', 'dual', 'multi']).map((l) => normalizeLanguage(l));
-  const isPreferred = (r: TorrentResult): boolean =>
-    parseFilename(r.raw || r.title).languages.some((l) => preferred.includes(normalizeLanguage(l)));
+  const isPreferred = (r: TorrentResult): boolean => hasPreferredLanguage(r, preferred);
   let uncached: TorrentResult[] = [];
   // TorBox has its own authoritative cache; DMM/RD hits cannot stand in for it.
   if (rd.provider === 'torbox') {
@@ -110,9 +171,7 @@ export async function findCachedStreams(
         && !opts.negatives?.has(r.infoHash) && (!opts.canDownload || opts.canDownload(r)));
       results = results.filter(r => cached.has(r.infoHash));
       // Deterministic order + collapse duplicate releases (same quality & size).
-      results.sort((a, b) =>
-        qualityRank(b.quality) - qualityRank(a.quality) ||
-        (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
+      results.sort((a, b) => compareStreamCandidates(a, b));
       const seen = new Set<string>();
       results = results.filter(r => {
         // Only collapse true duplicates (same quality AND known size); unknown
@@ -123,10 +182,7 @@ export async function findCachedStreams(
         return true;
       });
       if (uncached.length) {
-        uncached.sort((a, b) =>
-          qualityRank(b.quality) - qualityRank(a.quality) ||
-          (b.seeders ?? 0) - (a.seeders ?? 0) ||
-          (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
+        uncached.sort((a, b) => compareStreamCandidates(a, b));
         const uSeen = new Set<string>();
         uncached = uncached.filter(r => {
           const key = r.sizeBytes != null ? `${r.quality ?? ''}|${r.sizeBytes}` : `${r.quality ?? ''}|hash:${r.infoHash}`;
@@ -223,7 +279,13 @@ export async function findCachedStreams(
       // throttle/auth errors are not negatives — they abort the whole probe.
       if (isBlockedFileError(err)) opts.negatives?.add(r.infoHash);
       const throttled = (err instanceof RealDebridError && err.status === 429) || /throttl|rate limit/i.test(msg);
-      if (throttled || (err instanceof RealDebridError && [401, 403].includes(err.status))) return streams;
+      if (throttled || (err instanceof RealDebridError && [401, 403].includes(err.status))) {
+        // Back off rather than hammer the provider further — RD throttling is a
+        // signal to stop, and an auth/denial will not resolve by retrying. Keep
+        // whatever streams were already found.
+        console.warn(`[probe] stopped probing on ${err instanceof RealDebridError ? `HTTP ${err.status}` : 'throttle'} (${msg}) after ${streams.length} stream(s) — provider is limiting requests`);
+        return streams;
+      }
     } finally {
       if (id && !keep && existing && !existingId) {
         try {
@@ -251,9 +313,14 @@ export async function findCachedStreams(
       const qualitySuffix = candidate.quality ? ` ${candidate.quality.toUpperCase()}` : '';
       const cp = parseFilename(candidate.raw || candidate.title);
       const langSuffix = cp.languages?.length ? ` · ${cp.languages.join('/')}` : '';
+      // Provider limitation: a season pack (season but no episode) must finish
+      // downloading entirely before any single episode becomes playable.
+      const seasonPackNote = candidate.season !== undefined && candidate.episode === undefined
+        ? '\nSeason packs must finish downloading fully before any episode plays.'
+        : '';
       const status = (message: string): Stream => ({
         name: `TorBox — downloading${qualitySuffix}${langSuffix}`,
-        description: `${candidate.raw || candidate.title}\n${message}\nOpen the TorBox dashboard to check progress. Reopen this title when finished.`,
+        description: `${candidate.raw || candidate.title}\n${message}\nOpen the TorBox dashboard to check progress. Reopen this title when finished.${seasonPackNote}`,
         externalUrl: 'https://torbox.app/dashboard',
       });
       attempts += 1;

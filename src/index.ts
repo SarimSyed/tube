@@ -9,9 +9,9 @@
 // `?apiKey=` or `RD_API_KEY`), and a fresh debrid client is built per request so
 // each provider/token gets its own identity and data.
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { addonBuilder } from 'stremio-addon-sdk';
 
 import { loadConfig } from './config.js';
@@ -24,6 +24,7 @@ import { TmdbClient } from './services/tmdb.js';
 import { ZileanProvider } from './services/zilean.js';
 import { TorznabProvider } from './services/torznab.js';
 import { PirateBayProvider } from './services/piratebay.js';
+import { YtsProvider } from './services/yts.js';
 import { SearchService } from './services/search.js';
 import { MetaService } from './meta/meta.js';
 import { LibraryCatalog } from './catalogs/library.js';
@@ -51,6 +52,19 @@ try {
   console.error('Manifest lint error:', err);
 }
 
+// Global safety net: surface otherwise-silent async failures so a bug is not
+// invisible. Tokens live in the URL path / request, never in these messages.
+function logUnexpected(kind: string, err: unknown): void {
+  if (err instanceof Error) {
+    console.error(`[process] ${kind}: ${err.name}: ${err.message}`);
+    if (err.stack) console.error(err.stack);
+  } else {
+    console.error(`[process] ${kind}:`, err);
+  }
+}
+process.on('unhandledRejection', (reason) => logUnexpected('unhandledRejection', reason));
+process.on('uncaughtException', (err) => logUnexpected('uncaughtException', err));
+
 const tmdb = config.tmdbApiKey ? new TmdbClient(config.tmdbApiKey) : null;
 const metaService = new MetaService(tmdb, caches);
 
@@ -59,6 +73,7 @@ const metaService = new MetaService(tmdb, caches);
 const providers = [];
 if (config.zileanUrl) providers.push(new ZileanProvider(config.zileanUrl, config.zileanApiKey ?? undefined));
 providers.push(new PirateBayProvider());
+providers.push(new YtsProvider());
 if (config.torznabUrl && config.torznabApiKey) {
   providers.push(new TorznabProvider(config.torznabUrl, config.torznabApiKey));
 }
@@ -78,12 +93,14 @@ function requestBaseUrl(req: Request): string {
 
 /**
  * Resolves the debrid credential for a request from, in order: the `:token`
- * path segment (URL-decoded), the `?apiKey=` query param, or `RD_API_KEY`.
- * Returns `null` when none is present, so callers can redirect to `/configure`.
+ * path segment (already URL-decoded by Express — do NOT decode again, or a
+ * token containing a literal `%` would be corrupted), the `?apiKey=` query
+ * param, or `RD_API_KEY`. Returns `null` when none is present, so callers can
+ * redirect to `/configure`.
  */
 function resolveToken(req: Request): string | null {
   const pathToken = req.params.token;
-  if (pathToken) return decodeURIComponent(pathToken);
+  if (pathToken) return pathToken;
   const queryToken = req.query.apiKey;
   if (typeof queryToken === 'string' && queryToken) return queryToken;
   return config.rdApiKey;
@@ -127,6 +144,8 @@ function sendError(res: Response, err: unknown): void {
 }
 
 const app = express();
+// Export so tests (and the singleton-mode app) can import and mount it.
+export { app };
 app.disable('x-powered-by');
 
 // Stremio addon protocol requires CORS on every route (clients fetch addons
@@ -139,6 +158,18 @@ app.use((req, res, next) => {
     res.sendStatus(204);
     return;
   }
+  next();
+});
+
+// Light request logger. Logs the matched route *pattern* (e.g. '/:token/stream/:type/:id'),
+// never the raw URL, so the token embedded in the path is not leaked to logs.
+app.use((req, res, next) => {
+  const t0 = performance.now();
+  res.on('finish', () => {
+    const ms = Math.round(performance.now() - t0);
+    const pattern = req.route?.path ?? '';
+    console.log(`[http] ${req.method} ${pattern} -> ${res.statusCode} (${ms}ms)`);
+  });
   next();
 });
 
@@ -275,7 +306,9 @@ app.get('/:token/meta/:type/:id', metaHandler);
 async function proxyCinemetaMeta(type: ContentType, id: string): Promise<Meta | null> {
   const ttId = id.split(':')[0];
   try {
-    const res = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${ttId}.json`);
+    const res = await fetch(`https://v3-cinemeta.strem.io/meta/${type}/${ttId}.json`, {
+      signal: AbortSignal.timeout(8_000),
+    });
     if (!res.ok) return null;
     const data = (await res.json()) as { meta?: Meta };
     return data.meta ?? null;
@@ -301,7 +334,10 @@ function streamHandler(req: Request, res: Response): void {
   const negatives = rd.provider === 'torbox' ? torboxNegatives : negativeStore;
   const langs = preferredLanguages(token);
   const resolver = new StreamResolver(rd, { search: searchService, caches, negatives, preferredLanguages: langs });
-  const ttProvider = new TtStreamProvider(rd, caches, searchService, negatives, langs);
+  const ttProvider = new TtStreamProvider(rd, caches, searchService, negatives, langs, {
+    minQuality: config.minQuality ?? undefined,
+    excludeQuality: config.excludeQuality,
+  });
 
   const type = stripJson(req.params.type) as ContentType;
   const id = stripJson(req.params.id);
@@ -319,11 +355,38 @@ function streamHandler(req: Request, res: Response): void {
 }
 app.get('/:token/stream/:type/:id', streamHandler);
 
-const port = config.port;
-app.listen(port, () => {
-  console.log(`Tube addon listening on http://0.0.0.0:${port}`);
-  console.log(`Open http://<host>:${port}/configure to set up Real-Debrid`);
-  if (providers.length === 0) {
-    console.warn('No search provider configured (ZILEAN_URL / TORZNAB_URL empty) — streams are limited to your cloud library.');
-  }
+// RD_API_KEY singleton mode: when a server-side token is configured, the addon
+// is also mounted without a `:token` path segment so `/manifest.json` installs
+// work end-to-end (Stremio resolves catalog/meta/stream under the manifest's
+// base). Each handler resolves the token to `config.rdApiKey`. These routes are
+// only registered when a singleton key is present.
+if (config.rdApiKey) {
+  app.get('/catalog/:type/:id', catalogHandler);
+  app.get('/catalog/:type/:id/:extra', catalogHandler);
+  app.get('/meta/:type/:id', metaHandler);
+  app.get('/stream/:type/:id', streamHandler);
+}
+
+// JSON 404 for any unmatched route — Stremio clients expect JSON, not HTML.
+// (No path is echoed: the request path may carry the user's token.)
+app.use((_req: Request, res: Response) => {
+  res.status(404).json({ err: 'not_found' });
 });
+
+// Error middleware: normalize synchronous throws from handlers to JSON errors.
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  sendError(res, err);
+});
+
+const port = config.port;
+// Only bind the port when this file is the entry module. Importing `index.js`
+// in tests builds the Express app (exported as `app`) without starting a server.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  app.listen(port, () => {
+    console.log(`Tube addon listening on http://0.0.0.0:${port}`);
+    console.log(`Open http://<host>:${port}/configure to set up Real-Debrid`);
+    if (providers.length === 0) {
+      console.warn('No search provider configured (ZILEAN_URL / TORZNAB_URL empty) — streams are limited to your cloud library.');
+    }
+  });
+}

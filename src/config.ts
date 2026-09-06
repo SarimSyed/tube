@@ -72,6 +72,11 @@ export function loadConfig(): Config {
     torznabApiKey: env('TORZNAB_API_KEY'),
     cacheTtlSeconds: envInt('CACHE_TTL_SECONDS', 120),
     includeUncached: envBool('INCLUDE_UNCACHED', true),
+    minQuality: env('MIN_QUALITY'),
+    excludeQuality: (env('EXCLUDE_QUALITY') ?? '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean),
     showLibraryCatalogs: envBool('SHOW_LIBRARY_CATALOGS', false),
     showSearchCatalogs: envBool('SHOW_SEARCH_CATALOGS', false),
     addonId: env('ADDON_ID') ?? 'community.tube',

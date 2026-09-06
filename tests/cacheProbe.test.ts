@@ -303,6 +303,32 @@ describe('TorBox optional uncached downloads', () => {
     expect(calls.addedHashes).toEqual([]);
   });
 
+  it('flags season-pack downloads with the full-download caveat', async () => {
+    const { rd } = torbox(new Set(), true);
+    const pack: TorrentResult = {
+      infoHash: 'f'.repeat(40), title: 'Show', sizeBytes: 1, isSeries: true, season: 1,
+      raw: 'Show.S01.mkv', source: 'zilean',
+    };
+    const streams = await probe(rd, [pack]);
+    expect(streams[0].description).toContain('Season packs must finish downloading fully');
+  });
+
+  it('filters low-quality candidates when minQuality is set', async () => {
+    const hash = 'a'.repeat(40);
+    const { rd } = torbox(new Set([hash]), false);
+    const low: TorrentResult = { infoHash: hash, title: 'Movie', quality: '720p', sizeBytes: 1, isSeries: false, raw: 'Movie.2020.720p.mkv', source: 'zilean' };
+    const streams = await findCachedStreams(rd, [low], { addDelayMs: 0, graceMs: 20, pollMs: 1, minQuality: '1080p' });
+    expect(streams).toEqual([]);
+  });
+
+  it('excludes a listed source token from download candidates', async () => {
+    const hash = 'a'.repeat(40);
+    const { rd } = torbox(new Set([hash]), true);
+    const cam: TorrentResult = { infoHash: hash, title: 'Movie', quality: '1080p', sizeBytes: 1, isSeries: false, raw: 'Movie.2020.1080p.HDCAM.mkv', source: 'zilean' };
+    const streams = await findCachedStreams(rd, [cam], { addDelayMs: 0, graceMs: 20, pollMs: 1, excludeQuality: ['hdcam'] });
+    expect(streams).toEqual([]);
+  });
+
   it('reuses the queued cloud torrent and streams it after completion despite a cache API miss', async () => {
     const hash = 'a'.repeat(40);
     const completed = new Set<string>();
