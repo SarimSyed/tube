@@ -276,13 +276,17 @@ export class TtStreamProvider {
       }
       return true;
     });
+    const playable = deduped.filter((s) => s.url);
+    const actions = deduped.filter((s) => !s.url);
     // Data-saver installs list the smallest playable file first.
     if (this.qualityFilters.smallerFirst) {
-      deduped.sort(
+      playable.sort(
         (a, b) => (a.behaviorHints?.videoSize ?? Number.MAX_SAFE_INTEGER) - (b.behaviorHints?.videoSize ?? Number.MAX_SAFE_INTEGER),
       );
     }
-    return { streams: deduped.slice(0, STREAM_TARGET) };
+    // Cap only the playable list — download/status rows are always kept, so a
+    // fully-cached picker can't push the explicit download offers out of view.
+    return { streams: [...playable.slice(0, STREAM_TARGET), ...actions] };
   }
 
   /**
@@ -443,8 +447,9 @@ export class TtStreamProvider {
     // the cached streams. Nothing is added to the account until the user clicks
     // one of these rows (TorBox download-enabled installs only). Hash already in
     // the cloud or blocked by the provider are never offered.
+    let downloadRows: Stream[] = [];
     if (this.rd.allowUncached && this.downloadActionUrl) {
-      streams.push(...buildDownloadRows(uncached, {
+      downloadRows = buildDownloadRows(uncached, {
         minQuality: this.qualityFilters.minQuality,
         excludeQuality: this.qualityFilters.excludeQuality,
         maxResolution: this.qualityFilters.maxResolution,
@@ -453,8 +458,10 @@ export class TtStreamProvider {
         cloudHashes,
         preferredLanguages: preferredList,
         actionUrl: this.downloadActionUrl,
-      }));
+      });
+      streams.push(...downloadRows);
     }
+    console.log(`[tt] "${name}": ${playable.length} cached playable candidate(s), ${uncached.length} uncached → ${downloadRows.length} download row(s) offered (downloads ${this.rd.allowUncached && this.downloadActionUrl ? 'enabled' : 'off'})`);
 
     if (this.negativesStore) this.negativesStore.saveSoon();
     else this.caches.misc.set(negKey, negatives);
