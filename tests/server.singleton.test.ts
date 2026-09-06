@@ -68,3 +68,54 @@ describe('Tube singleton mode (RD_API_KEY set)', () => {
     expect((await get('/meta/movie/rd:1')).status).toBe(500);
   });
 });
+
+describe('Explicit download route (tokenless, TorBox download install)', () => {
+  let dlServer: Server;
+  let dlBase: string;
+
+  beforeAll(async () => {
+    const app = createApp({
+      port: 7000,
+      rdApiBase: null,
+      torboxApiBase: 'http://127.0.0.1:9', // closed port: add fails fast
+      dataDir: '/tmp',
+      baseUrl: 'http://localhost:7000',
+      rdApiKey: 'torbox-download:test-key',
+      tmdbApiKey: null,
+      zileanUrl: null,
+      zileanApiKey: null,
+      torznabUrl: null,
+      torznabApiKey: null,
+      cacheTtlSeconds: 120,
+      includeUncached: true,
+      minQuality: null,
+      excludeQuality: [],
+      showLibraryCatalogs: false,
+      showSearchCatalogs: false,
+      logRequests: false,
+      addonId: 'community.tube',
+      addonName: 'Tube (TorBox)',
+      addonDescription: 'desc',
+      version: '1.0.0',
+    });
+    await new Promise<void>((resolve) => { dlServer = app.listen(0, () => resolve()); });
+    const addr = dlServer.address();
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
+    dlBase = `http://127.0.0.1:${port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => dlServer.close(() => resolve()));
+  });
+
+  it('accepts a valid hash and redirects to the TorBox dashboard', async () => {
+    const res = await fetch(`${dlBase}/download?hash=${'a'.repeat(40)}`, { redirect: 'manual' });
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('https://torbox.app/dashboard');
+  });
+
+  it('rejects a malformed hash', async () => {
+    const res = await fetch(`${dlBase}/download?hash=not-a-hash`, { redirect: 'manual' });
+    expect(res.status).toBe(400);
+  });
+});

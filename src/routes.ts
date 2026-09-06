@@ -331,7 +331,11 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     const rd = clientFor(token);
     const negatives = rd.provider === 'torbox' ? torboxNegatives : negativeStore;
     const prefs = parseCredentialPrefs(token);
-    const resolver = new StreamResolver(rd, { search: searchService, caches, negatives, preferredLanguages: prefs.languages });
+    const downloadActionUrl = (infoHash: string): string =>
+      `${requestBaseUrl(req)}/${encodeURIComponent(token)}/download?hash=${infoHash}`;
+    const resolver = new StreamResolver(rd, {
+      search: searchService, caches, negatives, preferredLanguages: prefs.languages, downloadActionUrl,
+    });
     // Per-install network profile from the install URL: cap resolution/size and,
     // when a size cap is set, list the smallest playable file first.
     const profile = {
@@ -343,6 +347,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
       search: searchService,
       negatives,
       preferredLanguages: prefs.languages,
+      downloadActionUrl,
       qualityFilters: {
         minQuality: config.minQuality ?? undefined,
         excludeQuality: config.excludeQuality,
@@ -366,6 +371,38 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
   };
   app.get('/:token/stream/:type/:id', streamHandler);
 
+  // ---------------------------------------------------------------- download
+
+  // Clicking a "Download (uncached)" row hits this route: it adds that exact
+  // magnet to the user's TorBox account (download-enabled installs only) and
+  // sends them to the TorBox dashboard. Opening a title never does this on its
+  // own — only this explicit click does.
+  const downloadHandler = async (req: Request, res: Response): Promise<void> => {
+    const token = resolveToken(req);
+    if (!token) {
+      res.status(401).json({ err: 'missing_token' });
+      return;
+    }
+    const rd = clientFor(token);
+    if (rd.provider !== 'torbox' || !rd.allowUncached) {
+      res.status(403).json({ err: 'downloads_not_enabled', hint: 'Enable "Download when no cached stream" on /configure' });
+      return;
+    }
+    const hash = String(req.query.hash ?? '').toLowerCase();
+    if (!/^[0-9a-f]{40}$/.test(hash)) {
+      res.status(400).json({ err: 'invalid_hash' });
+      return;
+    }
+    try {
+      await rd.addMagnet(`magnet:?xt=urn:btih:${hash}`, false);
+      console.log(`[download] queued ${hash.slice(0, 8)}…`);
+    } catch (err) {
+      console.warn('[download] add failed:', err instanceof Error ? err.message : String(err));
+    }
+    res.redirect(302, 'https://torbox.app/dashboard');
+  };
+  app.get('/:token/download', downloadHandler);
+
   // --------------------------------------------------- singleton (tokenless)
 
   // RD_API_KEY singleton mode: when a server-side token is configured, the addon
@@ -378,6 +415,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     app.get('/catalog/:type/:id/:extra', catalogHandler);
     app.get('/meta/:type/:id', metaHandler);
     app.get('/stream/:type/:id', streamHandler);
+    app.get('/download', downloadHandler);
   }
 
   // ---------------------------------------------------------- 404 & errors

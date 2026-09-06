@@ -29,9 +29,18 @@ TorBox offers the equivalent **TB Library** and **TB Search** catalogs; it has n
 
 On `/configure`, choose **TorBox** and enable **Download when no cached stream is available** before generating your install link. Replace your previous Tube TorBox installation with that link. Existing installs remain cached-only; the option is stored per installation, not as a server-wide switch.
 
-With this option enabled, opening a movie or episode can submit one matching uncached torrent if Tube cannot find a playable cached stream. Tube prefers an existing download, retains it while it is downloading, and briefly deduplicates repeated submissions. A **TorBox — downloading** entry opens your TorBox dashboard. Reopen the title after the download finishes to get a playable stream; the status entry itself does not play video. Download time and availability depend on seeds and your TorBox account's limits.
+With this option enabled, when Tube cannot find a playable cached stream for a
+title it lists the uncached releases as **"Download ⬇" rows** (with quality,
+size and seeders) below the cached streams. Nothing is started just by opening
+a title — clicking one of those rows adds *that* release to your TorBox
+account and takes you to the TorBox dashboard. While it downloads, reopening
+the title shows a status row for it; reopen again once it finishes to play it.
+Tube prefers an existing cached stream and never submits an uncached torrent
+unless you click its download row.
 
-The default sends `add_only_if_cached=true`. Only the opted-in fallback submits `add_only_if_cached=false`; browsing still prefers cached streams. No uncached torrent is submitted if the provider cache or library check fails.
+The default sends `add_only_if_cached=true`. Only the opted-in installs show
+download rows, and only the clicked release is submitted. No uncached torrent
+is submitted if the provider cache or library check fails.
 
 Key properties:
 
@@ -263,10 +272,10 @@ npm run build        # emit dist/
   currently Real-Debrid only. TorBox adds only cached torrents unless the installation explicitly enables the download fallback described above.
 - A token URL grants access to that provider account — keep it private, the same
   way you would with a Torrentio or DMM Cast install link.
-- Use Stremio's normal search and select a movie or episode. Resolving streams can
-  add cached torrents to your provider account; with the TorBox download option it
-  can also queue one matching uncached torrent. Browsing the normal catalog does not
-  add torrents.
+- Use Stremio's normal search and select a movie or episode. Resolving streams can add
+  *cached* torrents to your provider account (that is how instant links are made);
+  nothing uncached is ever queued unless you click one of the explicit
+  **Download ⬇** rows on a TorBox download-enabled install.
 - An uncached or provider-blocked file cannot be played immediately. Tube tries
   matching alternatives and never presents an HTML landing page as a video.
 - The stream picker lists several cached releases (sorted by quality). Seeders are

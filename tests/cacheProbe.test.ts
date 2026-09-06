@@ -251,7 +251,7 @@ it('never deletes a pre-existing cloud torrent when playback cannot be resolved'
   expect(calls.deleteId).toBeNull();
 });
 
-describe('TorBox optional uncached downloads', () => {
+describe('TorBox: downloads are explicit, nothing auto-started', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
@@ -271,29 +271,21 @@ describe('TorBox optional uncached downloads', () => {
     return pending;
   }
 
-  it('keeps cached streams first and tops up with a download entry', async () => {
+  it('adds the cached release and never auto-starts the uncached one', async () => {
     const cached = 'c'.repeat(40);
-    const ready = new Set([cached]);
-    const fixture = torbox(ready, true);
+    const fixture = torbox(new Set([cached]), true);
     const streams = await probe(fixture.rd, [result('a'.repeat(40)), result(cached)]);
-    expect(streams).toHaveLength(2);
-    expect(streams[0].url).toContain(cached);           // cached stream first
-    expect(streams[1].name).toBe('TorBox — downloading'); // then the download entry
-    expect(streams[1].url).toBeUndefined();
-    expect(fixture.calls.addedHashes).toEqual([cached, 'a'.repeat(40)]);
+    expect(streams).toHaveLength(1);
+    expect(streams[0].url).toContain(cached); // only the cached release plays
+    expect(fixture.calls.addedHashes).toEqual([cached]); // uncached never added
     expect(fixture.calls.deleteId).toBeNull();
   });
 
-  it('queues at most one uncached torrent, preserves it, and returns a downloading status when enabled', async () => {
+  it('adds nothing when every candidate is uncached (downloads are explicit rows)', async () => {
     const { rd, calls } = torbox(new Set(), true);
     const streams = await probe(rd, [result('a'.repeat(40)), result('b'.repeat(40)), result('c'.repeat(40))]);
-    expect(streams).toEqual([expect.objectContaining({
-      name: 'TorBox — downloading',
-      description: expect.any(String),
-      externalUrl: 'https://torbox.app/dashboard',
-    })]);
-    expect(streams[0].url).toBeUndefined();
-    expect(calls.addedHashes).toHaveLength(1);
+    expect(streams).toEqual([]);
+    expect(calls.addedHashes).toEqual([]);
     expect(calls.deleteId).toBeNull();
   });
 
@@ -303,14 +295,14 @@ describe('TorBox optional uncached downloads', () => {
     expect(calls.addedHashes).toEqual([]);
   });
 
-  it('flags season-pack downloads with the full-download caveat', async () => {
-    const { rd } = torbox(new Set(), true);
+  it('never auto-starts an uncached season pack', async () => {
+    const { rd, calls } = torbox(new Set(), true);
     const pack: TorrentResult = {
       infoHash: 'f'.repeat(40), title: 'Show', sizeBytes: 1, isSeries: true, season: 1,
       raw: 'Show.S01.mkv', source: 'zilean',
     };
-    const streams = await probe(rd, [pack]);
-    expect(streams[0].description).toContain('Season packs must finish downloading fully');
+    expect(await probe(rd, [pack])).toEqual([]);
+    expect(calls.addedHashes).toEqual([]);
   });
 
   it('filters low-quality candidates when minQuality is set', async () => {
@@ -329,25 +321,12 @@ describe('TorBox optional uncached downloads', () => {
     expect(streams).toEqual([]);
   });
 
-  it('reuses the queued cloud torrent and streams it after completion despite a cache API miss', async () => {
+  it('does not re-add a torrent when availability says nothing is cached', async () => {
     const hash = 'a'.repeat(40);
-    const completed = new Set<string>();
-    const { rd, calls } = torbox(completed, true);
-    rd.instantAvailability = async () => new Set();
-    rd.listTorrents = async () => calls.addedHashes.map(hash => ({
-      id: `id-${hash}`, hash, status: completed.has(hash) ? 'downloaded' : 'downloading',
-    })) as never;
-
-    expect(await probe(rd, [result(hash)])).toEqual([expect.objectContaining({ name: 'TorBox — downloading' })]);
-    expect(await probe(rd, [result(hash)])).toEqual([expect.objectContaining({ name: 'TorBox — downloading' })]);
-    expect(calls.addedHashes).toEqual([hash]);
-    expect(calls.deleteId).toBeNull();
-
-    completed.add(hash);
-    const streams = await probe(rd, [result(hash)]);
-    expect(streams).toHaveLength(1);
-    expect(streams[0].url).toBe(`https://mock/stream/${hash}.mkv`);
-    expect(calls.addedHashes).toEqual([hash]);
+    const { rd, calls } = torbox(new Set(), true);
+    rd.listTorrents = async () => [{ id: `id-${hash}`, hash, status: 'downloading' }] as never;
+    expect(await probe(rd, [result(hash)])).toEqual([]);
+    expect(calls.addedHashes).toEqual([]);
     expect(calls.deleteId).toBeNull();
   });
 });
@@ -463,15 +442,18 @@ describe('TorBox download top-up', () => {
     expect(rd.addMagnet.mock.calls.filter(c => String(c[1]) === 'false').length).toBe(0); // no uncached submitted
   });
 
-  it('tops up below the target with downloads ordered by quality', async () => {
+  it('never auto-starts uncached releases when the picker is thin', async () => {
     const cached: Candidate[] = [{ hash: '1'.repeat(40), quality: '1080p', size: 2_000_000_000 }];
     const uncached: Candidate[] = [
       { hash: '2'.repeat(40), quality: '2160p', size: 4_000_000_000 },
       { hash: '3'.repeat(40), quality: '720p', size: 1_000_000_000 },
     ];
     const rd = gateway(cached, uncached);
-    const streams = await findCachedStreams(rd, [...cached, ...uncached].map(res), { addDelayMs: 0, graceMs: 20, pollMs: 1, downloadTarget: 5 });
-    expect(streams.map(s => s.name)).toEqual(['TB 1080P ⚡', 'TorBox — downloading 2160P', 'TorBox — downloading 720P']);
+    const streams = await findCachedStreams(rd, [...cached, ...uncached].map(res), { addDelayMs: 0, graceMs: 20, pollMs: 1 });
+    // Only the cached release plays; the uncached ones are left for explicit
+    // download rows (the caller's job), never submitted here.
+    expect(streams.map(s => s.name)).toEqual(['TB 1080P ⚡']);
+    expect(rd.addMagnet.mock.calls.filter(c => String(c[1]) === 'false').length).toBe(0);
   });
 });
 

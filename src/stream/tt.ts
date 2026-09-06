@@ -16,6 +16,7 @@ import { normalizeTitle, parseFilename } from '../meta/parser.js';
 import { mapLimit } from '../util.js';
 import { torrentStreams } from './resolver.js';
 import { findCachedStreams, compareStreamCandidates } from './cacheProbe.js';
+import { buildDownloadRows } from './downloadRows.js';
 import { CINEMETA_TIMEOUT_MS } from '../constants.js';
 
 const CINEMETA = 'https://v3-cinemeta.strem.io';
@@ -105,6 +106,9 @@ export interface TtStreamOptions {
   preferredLanguages?: string[];
   /** Quality preferences: minimum resolution and source tokens to exclude. */
   qualityFilters?: QualityFilters;
+  /** Builds the Tube action URL for a "Download (uncached)" row. When omitted,
+   * no download rows are offered. */
+  downloadActionUrl?: (infoHash: string) => string;
 }
 
 export class TtStreamProvider {
@@ -112,6 +116,7 @@ export class TtStreamProvider {
   private negativesStore: NegativeStore | null;
   private preferredLanguages: string[];
   private qualityFilters: QualityFilters;
+  private downloadActionUrl: ((infoHash: string) => string) | undefined;
 
   /**
    * @param rd Debrid gateway (Real-Debrid or TorBox) for cloud queries and probing.
@@ -127,6 +132,7 @@ export class TtStreamProvider {
     this.negativesStore = options.negatives ?? null;
     this.preferredLanguages = options.preferredLanguages ?? [];
     this.qualityFilters = options.qualityFilters ?? {};
+    this.downloadActionUrl = options.downloadActionUrl;
   }
 
   /** Fetch this id's name/year from Cinemeta, cached in the `tmdb` TTL cache. */
@@ -178,13 +184,17 @@ export class TtStreamProvider {
 
     const streams: Stream[] = [];
     const seenUrls = new Set<string>();
+    const cloudHashes = new Set(torrents.map((t) => t.hash.toLowerCase()));
+    const providerLabel = this.rd.provider === 'torbox' ? 'TorBox' : 'Real-Debrid';
+    const dashboardUrl = this.rd.provider === 'torbox' ? 'https://torbox.app/dashboard' : 'https://real-debrid.com/torrents';
 
-    // Collect the matching downloaded torrents first (pure list filtering, no
-    // I/O), then expand them concurrently so the per-torrent RD round-trips
-    // (info + unrestrict) overlap instead of serializing.
+    // Single pass over the cloud: download-able matches are expanded (playable
+    // now), while matching in-flight torrents (started by an earlier explicit
+    // download click) are surfaced as "downloading" status rows. Pure list
+    // filtering — no I/O until the concurrent expansion below.
     const matches: RdTorrentSummary[] = [];
+    const statusTorrents: RdTorrentSummary[] = [];
     for (const t of torrents) {
-      if (matches.length >= CLOUD_MATCH_LIMIT) break;
       const p = parseFilename(t.filename);
       if (!p.title) continue;
       const torrentNorm = normTitle(p.title);
@@ -204,11 +214,15 @@ export class TtStreamProvider {
         if (episode !== undefined && p.episode !== undefined && p.episode !== episode) continue;
       }
 
-      // Only downloaded torrents have playable links.
-      if (t.status !== 'downloaded') continue;
-      matches.push(t);
+      if (t.status === 'downloaded') {
+        if (matches.length < CLOUD_MATCH_LIMIT) matches.push(t);
+      } else if (!['error', 'magnet_error', 'virus', 'dead'].includes(t.status)) {
+        if (statusTorrents.length < 3) statusTorrents.push(t);
+      }
     }
 
+    // Expand the downloaded matches concurrently so the per-torrent debrid
+    // round-trips (info + unrestrict) overlap instead of serializing.
     const expanded = await mapLimit(matches, CLOUD_EXPAND_CONCURRENCY, async (t): Promise<Stream[]> => {
       let info;
       try {
@@ -234,18 +248,32 @@ export class TtStreamProvider {
       }
     }
 
+    // Status rows: an in-flight cloud torrent the user already asked to download.
+    for (const t of statusTorrents) {
+      const p = parseFilename(t.filename);
+      const quality = p.quality ? ` ${p.quality.toUpperCase()}` : '';
+      streams.push({
+        name: `${providerLabel} — downloading${quality} ⏳`,
+        description: `${t.filename}\nThis torrent is downloading in your ${providerLabel} account.\nOpen the dashboard to check progress, then reopen this title when it finishes.`,
+        externalUrl: dashboardUrl,
+      });
+    }
+
     // Cloud streams come first; if we still have room, top up from the index so a
-    // title with a single cloud copy still surfaces its other cached releases.
+    // title with a single cloud copy still surfaces its other cached releases
+    // (plus explicit download rows for uncached ones — never auto-started).
     if (this.search && streams.length < STREAM_TARGET) {
-      const found = await this.searchAndAdd(type, meta.name, meta.year, season, episode);
+      const found = await this.searchAndAdd(type, meta.name, meta.year, season, episode, cloudHashes);
       streams.push(...found);
     }
 
-    // Dedupe by URL (cloud and index may both surface the same torrent) and cap.
+    // Dedupe playable rows by URL; keep action/status rows (externalUrl only).
     const seen = new Set<string>();
     const deduped = streams.filter((s) => {
-      if (!s.url || seen.has(s.url)) return false;
-      seen.add(s.url);
+      if (s.url) {
+        if (seen.has(s.url)) return false;
+        seen.add(s.url);
+      }
       return true;
     });
     // Data-saver installs list the smallest playable file first.
@@ -287,8 +315,9 @@ export class TtStreamProvider {
     type: ContentType,
     name: string,
     metaYear: number | undefined,
-    season?: number,
-    episode?: number,
+    season: number | undefined,
+    episode: number | undefined,
+    cloudHashes: Set<string>,
   ): Promise<Stream[]> {
     if (!this.search) return [];
     let results: TorrentResult[] = [];
@@ -349,99 +378,86 @@ export class TtStreamProvider {
       return [];
     }
 
-    let candidates = ranked;
-    // Prefilter to releases the debrid already has cached so we only add
-    // torrents that resolve instantly — this is what keeps Tube as fast as
-    // Torrentio/Comet instead of add+poll+delete probing every uncached hit.
-    // Real-Debrid's own availability endpoint is authoritative (and TTL-cached);
-    // the index's cached hints (DMM hashlist) are the fallback when the endpoint
-    // is unavailable. TorBox filters candidates itself inside findCachedStreams.
-    try {
-      if (this.rd.provider !== 'torbox') {
-        let cached: Set<string> | null = null;
-        try {
-          cached = await this.rd.instantAvailability(ranked.map((r) => r.infoHash));
-        } catch {
-          cached = null; // availability endpoint failed/disabled — use index hints
-        }
-        if (cached === null || cached.size === 0) {
-          const hinted = await this.search.checkCached(ranked.map((r) => r.infoHash));
-          if (hinted.size > 0) cached = hinted;
-        }
-        if (cached !== null && cached.size > 0) {
-          const cachedSet = cached;
-          candidates = ranked.filter((r) => cachedSet.has(r.infoHash));
-        }
-      }
-    } catch {
-      // Unknown cache state — fall through to probing everything.
-    }
-    if (candidates.length === 0) {
-      console.warn(`[tt] no cached candidates remain for "${name}" after the availability check`);
-      return [];
-    }
     const negKey = 'probe-neg';
     const negatives = this.negativesStore
       ? this.negativesStore.get()
       : (this.caches.misc.get(negKey) as Set<string> | undefined) ?? new Set<string>();
-    console.warn(`[tt] probing ${candidates.length} cached candidate(s) for "${name}"`);
-    try {
-      const streams = await findCachedStreams(this.rd, candidates, {
-        season, episode, negatives,
-        preferredLanguages: this.preferredLanguages.length ? this.preferredLanguages : undefined,
+    const preferredList = this.preferredLanguages.length ? this.preferredLanguages : undefined;
+
+    // Split the ranked releases into "playable now" (already cached on the
+    // debrid) and "download offers" (uncached). The provider's availability
+    // check is authoritative for both providers; when it is unavailable we
+    // fall back to the index's cached hints (or probe the ranked list).
+    let playable: TorrentResult[] = ranked;
+    let uncached: TorrentResult[] = [];
+    if (this.rd.provider === 'torbox') {
+      try {
+        const cached = await this.rd.instantAvailability(ranked.map((r) => r.infoHash));
+        if (cached) {
+          playable = ranked.filter((r) => cached.has(r.infoHash));
+          uncached = ranked.filter((r) => !cached.has(r.infoHash));
+        }
+      } catch {
+        // Availability check failed — probe the whole ranked list.
+      }
+    } else {
+      // Real-Debrid: only add releases it (or the DMM index) reports cached.
+      // Uncached RD downloads are not supported, so nothing is offered for them.
+      let filter: Set<string> | null = null;
+      try {
+        const avail = await this.rd.instantAvailability(ranked.map((r) => r.infoHash));
+        if (avail && avail.size > 0) filter = avail;
+      } catch {
+        // Availability endpoint failed — fall back to the index hints.
+      }
+      if (!filter) {
+        try {
+          const hinted = await this.search.checkCached(ranked.map((r) => r.infoHash));
+          if (hinted.size > 0) filter = hinted;
+        } catch {
+          // Unknown cache state — probe everything.
+        }
+      }
+      playable = filter ? ranked.filter((r) => filter!.has(r.infoHash)) : ranked;
+    }
+
+    const streams: Stream[] = [];
+    if (playable.length > 0) {
+      console.warn(`[tt] probing ${playable.length} cached candidate(s) for "${name}"`);
+      try {
+        const got = await findCachedStreams(this.rd, playable, {
+          season, episode, negatives,
+          preferredLanguages: preferredList,
+          minQuality: this.qualityFilters.minQuality,
+          excludeQuality: this.qualityFilters.excludeQuality,
+          maxResolution: this.qualityFilters.maxResolution,
+          maxSizeBytes: this.qualityFilters.maxSizeBytes,
+        });
+        streams.push(...got);
+      } catch (err) {
+        console.warn('[tt] index probe failed:', err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Explicit downloads: uncached releases become click-to-download rows below
+    // the cached streams. Nothing is added to the account until the user clicks
+    // one of these rows (TorBox download-enabled installs only). Hash already in
+    // the cloud or blocked by the provider are never offered.
+    if (this.rd.allowUncached && this.downloadActionUrl) {
+      streams.push(...buildDownloadRows(uncached, {
         minQuality: this.qualityFilters.minQuality,
         excludeQuality: this.qualityFilters.excludeQuality,
         maxResolution: this.qualityFilters.maxResolution,
         maxSizeBytes: this.qualityFilters.maxSizeBytes,
-        canDownload: r => normalizeTitle(r.title) === normalizeTitle(name)
-          && r.isSeries === (type === 'series')
-          && (type !== 'movie' || yearsMatch({ torrentYear: r.year, metaYear }))
-          && (season === undefined || r.season === undefined || r.season === season)
-          && (episode === undefined || r.episode === undefined || r.episode === episode),
-      });
-      // Binge-watching support: when this series episode was itself queued as an
-      // uncached download (a status entry has no playable url), also queue E+1.
-      if (type === 'series' && this.rd.allowUncached && streams.some((s) => !s.url)) {
-        await this.queueNextEpisode(results, season, episode);
-      }
-      if (this.negativesStore) this.negativesStore.saveSoon();
-      else this.caches.misc.set(negKey, negatives);
-      return streams;
-    } catch (err) {
-      console.warn('[tt] index probe failed:', err instanceof Error ? err.message : err);
-      return [];
+        negatives,
+        cloudHashes,
+        preferredLanguages: preferredList,
+        actionUrl: this.downloadActionUrl,
+      }));
     }
-  }
 
-  /**
-   * Queue the next episode (SxE+1) of a series while the user binge-watches.
-   * Reuses the same add-magnet path (and its in-flight dedup) as the normal
-   * uncached flow; skips anything already in the cloud and never fires for
-   * movies or when downloads are off. Best-effort: a failure is only logged.
-   */
-  private async queueNextEpisode(results: TorrentResult[], season?: number, episode?: number): Promise<void> {
-    if (season === undefined || episode === undefined) return;
-    const next = episode + 1;
-    const preferred = this.preferredLanguages.length ? this.preferredLanguages : undefined;
-    const candidates = results
-      .filter((r) => r.isSeries && r.season === season && r.episode === next && r.infoHash)
-      .sort((a, b) => compareStreamCandidates(a, b, preferred));
-    if (candidates.length === 0) return;
-
-    let existing = new Set<string>();
-    try {
-      existing = new Set((await this.rd.listTorrents()).map((t) => t.hash.toLowerCase()));
-    } catch {
-      // Unknown cloud state — still safe to proceed; addMagnet dedups in-flight.
-    }
-    const pick = candidates.find((r) => !existing.has(r.infoHash)) ?? candidates[0];
-    if (!pick || existing.has(pick.infoHash)) return;
-
-    try {
-      await this.rd.addMagnet(`magnet:?xt=urn:btih:${pick.infoHash}`, false);
-      console.log(`[tt] prefetched next episode S${String(season).padStart(2, '0')}E${String(next).padStart(2, '0')} (${pick.infoHash.slice(0, 8)}…)`);
-    } catch (err) {
-      console.warn('[tt] next-episode prefetch failed:', err instanceof Error ? err.message : String(err));
-    }
+    if (this.negativesStore) this.negativesStore.saveSoon();
+    else this.caches.misc.set(negKey, negatives);
+    return streams;
   }
 }

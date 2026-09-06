@@ -16,6 +16,7 @@ import type { CacheSet } from '../services/cache.js';
 import type { NegativeStore } from '../services/negativeStore.js';
 import type { TorrentResult } from '../types.js';
 import { findCachedStreams } from './cacheProbe.js';
+import { buildDownloadRows } from './downloadRows.js';
 import { parseLibraryId, parseSearchId, parseSearchContext } from '../id.js';
 import { parseFilename, isVideoFile } from '../meta/parser.js';
 import { mapLimit } from '../util.js';
@@ -152,6 +153,8 @@ export class StreamResolver {
       caches?: CacheSet;
       negatives?: NegativeStore;
       preferredLanguages?: string[];
+      /** Builds the Tube action URL for a "Download (uncached)" row. */
+      downloadActionUrl?: (infoHash: string) => string;
     } = {},
   ) {}
 
@@ -218,25 +221,59 @@ export class StreamResolver {
       } catch {
         // keep just the clicked candidate
       }
-      // Prefilter to index-known cached copies (same as the tt path) so we only
-      // add torrents likely to be instant and avoid RD add-throttling.
-      try {
-        const cached = this.rd.provider === 'torbox' ? new Set<string>() : await this.deps.search.checkCached(candidates.map((r) => r.infoHash));
-        if (cached.size > 0) candidates = candidates.filter((r) => cached.has(r.infoHash));
-      } catch {
-        // unknown cache state — probe everything
+      // Split the clicked title's releases into cached (playable now) and
+      // uncached (explicit download rows). Nothing uncached is auto-started.
+      let playable: TorrentResult[] = candidates;
+      let uncached: TorrentResult[] = [];
+      if (this.rd.provider === 'torbox') {
+        try {
+          const cached = await this.rd.instantAvailability(candidates.map((r) => r.infoHash));
+          if (cached) {
+            playable = candidates.filter((r) => cached.has(r.infoHash));
+            uncached = candidates.filter((r) => !cached.has(r.infoHash));
+          }
+        } catch {
+          // Availability check failed — probe the candidates we have.
+        }
+      } else {
+        try {
+          const cached = await this.deps.search.checkCached(candidates.map((r) => r.infoHash));
+          playable = cached.size > 0 ? candidates.filter((r) => cached.has(r.infoHash)) : candidates;
+        } catch {
+          playable = candidates; // unknown cache state — probe what we have
+        }
       }
-      const streams = await findCachedStreams(this.rd, candidates, {
+      const streams = await findCachedStreams(this.rd, playable, {
         season: result.season,
         episode: result.episode,
         negatives,
         preferredLanguages: this.deps.preferredLanguages?.length ? this.deps.preferredLanguages : undefined,
       });
+      // Explicit downloads (TorBox download-enabled installs): offer the
+      // uncached releases as click-to-download rows instead of auto-adding.
+      if (this.rd.allowUncached && this.deps.downloadActionUrl) {
+        streams.push(...buildDownloadRows(uncached, {
+          negatives,
+          actionUrl: this.deps.downloadActionUrl,
+        }));
+      }
       this.deps.negatives?.saveSoon();
       return { streams };
     }
 
-    // Legacy IDs use the same bounded probing and blocked-file handling.
+    // Legacy IDs (no title context): cached ones probe normally; an uncached
+    // TorBox click becomes an explicit download row.
+    if (this.rd.provider === 'torbox' && this.rd.allowUncached && this.deps.downloadActionUrl) {
+      try {
+        const cached = await this.rd.instantAvailability([hash]);
+        if (cached && !cached.has(hash)) {
+          const legacy: TorrentResult = { infoHash: hash, title: hash, raw: hash, isSeries: false, source: 'zilean' };
+          return { streams: buildDownloadRows([legacy], { negatives: this.deps.negatives?.get(), actionUrl: this.deps.downloadActionUrl }) };
+        }
+      } catch {
+        // fall through to normal probing
+      }
+    }
     const streams = await findCachedStreams(this.rd, [{
       infoHash: hash, title: hash, raw: hash, isSeries: false, source: 'zilean',
     }], { negatives: this.deps.negatives?.get() });

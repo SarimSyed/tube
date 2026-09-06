@@ -225,6 +225,84 @@ it('probes only releases that can deliver the requested episode', async () => {
   } finally { vi.unstubAllGlobals(); }
 });
 
+it('offers explicit download rows for uncached releases and adds nothing on open', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Movie', year: '2020' } }))));
+  try {
+    const caches = createCaches(120);
+    const search = new SearchService([{
+      name: 'fake',
+      search: async () => [
+        { infoHash: 'a'.repeat(40), title: 'Example Movie', isSeries: false, raw: 'x', source: 'zilean' },
+        { infoHash: 'b'.repeat(40), title: 'Example Movie', isSeries: false, raw: 'y', source: 'zilean' },
+      ],
+    }] as unknown as TorrentProvider, caches);
+
+    const rd = {
+      provider: 'torbox',
+      allowUncached: true,
+      listTorrents: async () => [],
+      instantAvailability: async () => new Set(), // nothing cached
+      addMagnet: vi.fn(async () => ({ id: '', uri: '' })),
+      getTorrentInfo: vi.fn(async () => ({ status: 'downloading' })),
+    } as unknown as RdGateway;
+
+    const tt = new TtStreamProvider(rd, caches, {
+      search,
+      downloadActionUrl: (hash: string) => `http://localhost:7000/tok/download?hash=${hash}`,
+    });
+    const resp = await tt.resolve('movie', 'tt123456');
+
+    // Opening must never start a download — the rows are explicit actions only.
+    expect(rd.addMagnet).not.toHaveBeenCalled();
+    expect(resp.streams.length).toBeGreaterThan(0);
+    expect(resp.streams.every((s) => s.url === undefined && s.externalUrl !== undefined)).toBe(true);
+    expect(resp.streams[0].name).toMatch(/^Download ⬇ /);
+    expect(resp.streams[0].externalUrl).toContain(`hash=${'a'.repeat(40)}`);
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('shows a status row for an in-flight cloud torrent instead of auto-adding', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Movie', year: '2020' } }))));
+  try {
+    const rd = {
+      provider: 'torbox',
+      listTorrents: async () => [{ id: 'T1', filename: 'Example.Movie.2020.1080p.mkv', hash: 'a'.repeat(40), status: 'downloading', progress: 40, added: '', bytes: 1 }],
+    } as unknown as RdGateway;
+    // No search service: nothing may be probed or added from the index.
+    const tt = new TtStreamProvider(rd, createCaches(120));
+    const resp = await tt.resolve('movie', 'tt123456');
+    expect(resp.streams).toHaveLength(1);
+    expect(resp.streams[0].url).toBeUndefined();
+    expect(resp.streams[0].name).toContain('downloading');
+    expect(resp.streams[0].externalUrl).toBe('https://torbox.app/dashboard');
+  } finally { vi.unstubAllGlobals(); }
+});
+
+it('never offers download rows on a cached-only install', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Movie', year: '2020' } }))));
+  try {
+    const caches = createCaches(120);
+    const search = new SearchService([{
+      name: 'fake',
+      search: async () => [{ infoHash: 'a'.repeat(40), title: 'Example Movie', isSeries: false, raw: 'x', source: 'zilean' }],
+    }] as unknown as TorrentProvider, caches);
+    const rd = {
+      provider: 'torbox',
+      allowUncached: false, // cached-only install (torbox: token)
+      listTorrents: async () => [],
+      instantAvailability: async () => new Set(),
+      addMagnet: vi.fn(async () => ({ id: '', uri: '' })),
+    } as unknown as RdGateway;
+    const tt = new TtStreamProvider(rd, caches, {
+      search,
+      downloadActionUrl: (hash: string) => `http://localhost:7000/tok/download?hash=${hash}`,
+    });
+    const resp = await tt.resolve('movie', 'tt123456');
+    expect(resp.streams).toEqual([]);
+    expect(rd.addMagnet).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('uses Real-Debrid instant availability to skip uncached index results', async () => {
   // The authoritative RD availability check must stop Tube from add+poll+delete
   // probing candidates RD does not have cached (the slow path vs Torrentio).
@@ -307,40 +385,7 @@ it.each([
   } finally { vi.unstubAllGlobals(); }
 });
 
-it('prefetches the next episode after an uncached series episode is queued', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Show', year: '2020' } }))));
-  try {
-    const e2 = '2'.repeat(40);
-    const e3 = '3'.repeat(40);
-    const caches = createCaches(120);
-    const search = new SearchService([{
-      name: 'fixture',
-      search: async () => [
-        { infoHash: e2, title: 'Example Show', season: 1, episode: 2, isSeries: true, raw: 'Example.Show.S01E02.mkv', source: 'zilean' },
-        { infoHash: e3, title: 'Example Show', season: 1, episode: 3, isSeries: true, raw: 'Example.Show.S01E03.mkv', source: 'zilean' },
-      ],
-    }] as unknown as TorrentProvider, caches);
 
-    const addedHashes: string[] = [];
-    const rd = {
-      provider: 'torbox',
-      allowUncached: true,
-      listTorrents: async () => [],
-      instantAvailability: async () => new Set(),
-      addMagnet: vi.fn(async (magnet: string) => {
-        const hash = (magnet.match(/btih:([0-9a-f]+)/i) || [])[1]!;
-        addedHashes.push(hash);
-        return { id: `id-${hash}`, uri: magnet };
-      }),
-      getTorrentInfo: vi.fn(async () => ({ status: 'downloading' })),
-    } as unknown as RdGateway;
-
-    await new TtStreamProvider(rd, caches, { search }).resolve('series', 'tt1234567:1:2');
-
-    expect(addedHashes).toContain(e2); // the episode being watched is queued
-    expect(addedHashes).toContain(e3); // the next episode is prefetched
-  } finally { vi.unstubAllGlobals(); }
-});
 
 describe('TtStreamProvider cloud top-up', () => {
   let fetchMock: ReturnType<typeof vi.fn>;

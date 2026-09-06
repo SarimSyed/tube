@@ -1,14 +1,15 @@
 /**
  * Bounded cache-availability probing for torrent-index candidates.
  *
- * `findCachedStreams` figures out which of the given releases a debrid
- * provider already has cached (so they stream instantly) and turns them into
- * stream objects. Positive availability is delegated to the provider (the
- * `CachedRealDebrid` wrapper TTL-caches it); negative results — hashes the
- * provider reports as blocked/infringing — are recorded in the caller-supplied
- * `negatives` set (backed by `NegativeStore` or the `misc` cache's `probe-neg`
- * key) so they are skipped on later requests. Temporary errors and uncached
- * files are never stored as negatives.
+ * `findCachedStreams` adds releases the debrid already has cached and turns
+ * them into playable stream objects. It never starts an uncached download:
+ * callers decide what uncached candidates to offer as explicit download rows.
+ * Positive availability is delegated to the provider (the `CachedRealDebrid`
+ * wrapper TTL-caches it); negative results — hashes the provider reports as
+ * blocked/infringing — are recorded in the caller-supplied `negatives` set
+ * (backed by `NegativeStore` or the `misc` cache's `probe-neg` key) so they
+ * are skipped on later requests. Temporary errors and uncached files are never
+ * stored as negatives.
  */
 import { RealDebridError, isBlockedFileError, type RdGateway } from '../services/realdebrid.js';
 import type { TorrentResult } from '../types.js';
@@ -20,10 +21,6 @@ import { parseFilename, normalizeLanguage } from '../meta/parser.js';
 const DEFAULT_GRACE_MS = 8_000;
 /** Default cap on returned RD streams. */
 const DEFAULT_MAX = 3;
-/** Aim to show at least this many entries (cached + downloading) before giving up. */
-const DOWNLOAD_TARGET = 30;
-/** Never submit more than this many NEW downloads in a single stream request. */
-const MAX_NEW_DOWNLOADS = 3;
 /** TorBox: spend at most this long adding cached releases before returning. */
 const DEFAULT_TORBOX_ADD_BUDGET_MS = 5_000;
 
@@ -120,14 +117,8 @@ export interface ProbeOptions {
    * (TorBox cached loop; keeps the picker responsive and grows breadth over
    * later opens instead of waiting on every release up front). */
   cachedBudgetMs?: number;
-  /** Aim for this many total entries before considering download top-up. */
-  downloadTarget?: number;
-  /** Cap on NEW download submissions per request. */
-  maxNewDownloads?: number;
   /** Languages to float to the top of the stream list (default: hindi/dual/multi). */
   preferredLanguages?: string[];
-  /** Require a confident title/episode match before starting a background download. */
-  canDownload?: (result: TorrentResult) => boolean;
   /** Minimum resolution (e.g. "1080p"); unknown qualities are kept. */
   minQuality?: string;
   /** Source/quality tokens to exclude (matched as whole words against the raw name). */
@@ -156,15 +147,14 @@ async function poll<T>(
 }
 
 /**
- * Probe torrent index results against Real-Debrid to find the ones RD already
- * has cached. A cached magnet resolves to `downloaded` within seconds; an
- * uncached one stays `downloading`, so we delete it again to keep the user's
- * account clean and move on to the next candidate.
+ * Adds the releases the debrid already has cached and returns playable streams.
+ * A cached magnet resolves to `downloaded` quickly; a candidate that stays
+ * `downloading` (not actually cached) is deleted again to keep the account
+ * clean. Uncached releases are NEVER added here — callers surface them as
+ * explicit download rows instead.
  *
- * For TorBox the provider cache check is authoritative, so cached releases are
- * added quickly (no RD-style throttle) and, when `allowUncached` is set, a few
- * uncached releases are submitted as background downloads and surfaced as
- * "downloading" placeholder streams.
+ * For TorBox the provider cache check is authoritative, so confirmed-cached
+ * releases are added quickly (no RD-style throttle) within a short time budget.
  *
  * @returns Playable streams — cached releases first, capped by `opts.max`.
  */
@@ -183,14 +173,13 @@ export async function findCachedStreams(
     ? opts.preferredLanguages
     : ['hindi', 'dual', 'multi']).map((l) => normalizeLanguage(l));
   const isPreferred = (r: TorrentResult): boolean => hasPreferredLanguage(r, preferred);
-  let uncached: TorrentResult[] = [];
   // TorBox has its own authoritative cache; DMM/RD hits cannot stand in for it.
+  // Only releases it reports as cached are added here — uncached candidates are
+  // the caller's business (explicit download rows), never auto-started.
   if (rd.provider === 'torbox') {
     try {
       const cached = await rd.instantAvailability(results.map(r => r.infoHash));
       if (!cached) return [];
-      if (rd.allowUncached) uncached = results.filter(r => !cached.has(r.infoHash)
-        && !opts.negatives?.has(r.infoHash) && (!opts.canDownload || opts.canDownload(r)));
       results = results.filter(r => cached.has(r.infoHash));
       // Deterministic order + collapse duplicate releases (same quality & size).
       results.sort((a, b) => compareStreamCandidates(a, b));
@@ -203,21 +192,6 @@ export async function findCachedStreams(
         seen.add(key);
         return true;
       });
-      if (uncached.length) {
-        uncached.sort((a, b) => compareStreamCandidates(a, b));
-        const uSeen = new Set<string>();
-        uncached = uncached.filter(r => {
-          const key = r.sizeBytes != null ? `${r.quality ?? ''}|${r.sizeBytes}` : `${r.quality ?? ''}|hash:${r.infoHash}`;
-          if (uSeen.has(key)) return false;
-          uSeen.add(key);
-          return true;
-        });
-        const uPref = uncached.filter(isPreferred);
-        if (uPref.length > 0) {
-          const uOthers = uncached.filter((r) => !isPreferred(r));
-          uncached = [...uPref.slice(0, 5), ...uOthers, ...uPref.slice(5)];
-        }
-      }
     } catch {
       return [];
     }
@@ -326,66 +300,5 @@ export async function findCachedStreams(
     }
   }
 
-  // Top up a thin result set with a few downloads (TorBox download opt-in only).
-  // Cached streams always come first; we submit extra uncached torrents only to
-  const downloadTarget = opts.downloadTarget ?? DOWNLOAD_TARGET;
-  const maxNewDownloads = opts.maxNewDownloads ?? MAX_NEW_DOWNLOADS;
-  // fill the list up to downloadTarget, and never more than maxNewDownloads.
-  if (rd.allowUncached && uncached.length > 0 && streams.length < downloadTarget
-      && existing && max > 0 && attempts < maxAttempts && Date.now() < stopAt) {
-    let newDownloads = 0;
-    for (const candidate of uncached) {
-      if (streams.length >= downloadTarget || newDownloads >= maxNewDownloads
-          || attempts >= maxAttempts || Date.now() >= stopAt) break;
-      if (opts.negatives?.has(candidate.infoHash)) continue;
-
-      const qualitySuffix = candidate.quality ? ` ${candidate.quality.toUpperCase()}` : '';
-      const cp = parseFilename(candidate.raw || candidate.title);
-      const langSuffix = cp.languages?.length ? ` · ${cp.languages.join('/')}` : '';
-      // Provider limitation: a season pack (season but no episode) must finish
-      // downloading entirely before any single episode becomes playable.
-      const seasonPackNote = candidate.season !== undefined && candidate.episode === undefined
-        ? '\nSeason packs must finish downloading fully before any episode plays.'
-        : '';
-      const status = (message: string): Stream => ({
-        name: `TorBox — downloading${qualitySuffix}${langSuffix}`,
-        description: `${candidate.raw || candidate.title}\n${message}\nOpen the TorBox dashboard to check progress. Reopen this title when finished.${seasonPackNote}`,
-        externalUrl: 'https://torbox.app/dashboard',
-      });
-      attempts += 1;
-      try {
-        let torrentId = existing.get(candidate.infoHash);
-        if (!torrentId) {
-          const added = await rd.addMagnet(`magnet:?xt=urn:btih:${candidate.infoHash}`, false);
-          torrentId = added.id;
-          newDownloads += 1;
-        }
-        if (!torrentId) {
-          streams.push(status('Queued by TorBox.'));
-          continue;
-        }
-        let info;
-        try {
-          info = await rd.getTorrentInfo(torrentId);
-        } catch {
-          // Submission succeeded; retain it even if the next status read fails.
-          streams.push(status('Submitted; waiting for TorBox status.'));
-          continue;
-        }
-        if (info.status === 'downloaded') {
-          const ready = await torrentStreams(rd, info, opts.season, opts.episode, opts.negatives);
-          const fresh = ready.filter((s) => s.url != null && !seenUrls.has(s.url));
-          for (const s of fresh) seenUrls.add(s.url!);
-          if (fresh.length) streams.push(fresh[0]);
-          else streams.push({ name: 'TorBox — check download', description: 'Download finished but no matching playable file was found.', externalUrl: 'https://torbox.app/dashboard' });
-        } else {
-          streams.push(status(`Download status: ${info.status}.`));
-        }
-      } catch (err) {
-        if (isBlockedFileError(err)) opts.negatives?.add(candidate.infoHash);
-        console.warn('[download] submission failed:', err instanceof Error ? err.message : String(err));
-      }
-    }
-  }
   return streams;
 }
