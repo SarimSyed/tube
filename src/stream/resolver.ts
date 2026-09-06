@@ -18,6 +18,7 @@ import type { TorrentResult } from '../types.js';
 import { findCachedStreams } from './cacheProbe.js';
 import { parseLibraryId, parseSearchId, parseSearchContext } from '../id.js';
 import { parseFilename, isVideoFile } from '../meta/parser.js';
+import { mapLimit } from '../util.js';
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes <= 0) return '';
@@ -109,8 +110,7 @@ export async function torrentStreams(
     candidates = matched;
   }
 
-  const streams: Stream[] = [];
-  for (const { file, url } of candidates) {
+  const streams = await mapLimit(candidates, 3, async ({ file, url }) => {
     // `links[]` points at an HTML landing page; unrestrict gives the direct file.
     let direct: string;
     let title = basename(file.path);
@@ -121,12 +121,11 @@ export async function torrentStreams(
     } catch (err) {
       console.warn('[stream] unrestrict failed:', err instanceof Error ? err.message : err);
       if (isBlockedFileError(err)) negatives?.add(torrent.hash);
-      continue;
+      return null;
     }
-    const stream = playableStream(direct, title, file.bytes, rd.provider, torrent.seeders);
-    if (stream) streams.push(stream);
-  }
-  return streams;
+    return playableStream(direct, title, file.bytes, rd.provider, torrent.seeders);
+  });
+  return streams.filter((s): s is Stream => s !== null);
 }
 
 /** Log a not-ready reason and return an empty stream list. */

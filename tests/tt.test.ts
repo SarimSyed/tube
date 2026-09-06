@@ -179,6 +179,48 @@ describe('TtStreamProvider index fallback', () => {
   });
 });
 
+it('uses Real-Debrid instant availability to skip uncached index results', async () => {
+  // The authoritative RD availability check must stop Tube from add+poll+delete
+  // probing candidates RD does not have cached (the slow path vs Torrentio).
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ meta: { name: 'Example Movie', year: '2020' } }))));
+  try {
+    const cachedHash = 'a'.repeat(40);
+    const uncachedHash = 'b'.repeat(40);
+    const caches = createCaches(120);
+    const search = new SearchService([{
+      name: 'fake',
+      search: async () => [
+        { infoHash: cachedHash, title: 'Example Movie', isSeries: false, raw: 'x', source: 'zilean' },
+        { infoHash: uncachedHash, title: 'Example Movie', isSeries: false, raw: 'y', source: 'zilean' },
+      ],
+    }] as unknown as TorrentProvider, caches);
+
+    const addedHashes: string[] = [];
+    const rd = {
+      instantAvailability: vi.fn().mockResolvedValue(new Set([cachedHash])),
+      listTorrents: async () => [],
+      addMagnet: vi.fn(async (magnet: string) => {
+        const h = (magnet.match(/btih:([0-9a-f]+)/i) || [])[1]!;
+        addedHashes.push(h);
+        return { id: `id-${h}`, uri: magnet };
+      }),
+      getTorrentInfo: vi.fn()
+        .mockResolvedValueOnce({ id: `id-${cachedHash}`, hash: cachedHash, status: 'waiting_files_selection' } as never)
+        .mockResolvedValue({
+          id: `id-${cachedHash}`, hash: cachedHash, status: 'downloaded',
+          files: [{ id: 0, path: 'm.mkv', bytes: 1, selected: 1 }], links: ['https://mock/stream/m.mkv'],
+        } as never),
+      selectAllFiles: async () => {},
+      unrestrict: vi.fn(async (l: string) => ({ download: l, filename: l.split('/').pop() })),
+      deleteTorrent: vi.fn(async () => {}),
+    } as unknown as RdGateway;
+
+    const resp = await new TtStreamProvider(rd, caches, { search }).resolve('movie', 'tt123456');
+    expect(resp.streams).toHaveLength(1);
+    expect(addedHashes).toEqual([cachedHash]); // the uncached hash is never probed
+  } finally { vi.unstubAllGlobals(); }
+});
+
 it('finds a TorBox cached release beyond the first six index results with an empty cloud', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({meta:{name:'Example Movie',year:'2020'}}))));
   try {

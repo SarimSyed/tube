@@ -60,10 +60,11 @@ async function get(path: string): Promise<{ status: number; json: unknown; conte
 }
 
 describe('Tube HTTP server', () => {
-  it('serves /healthz as ok', async () => {
+  it('serves /healthz as ok with a version', async () => {
     const r = await get('/healthz');
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({ ok: true });
+    expect(r.json).toMatchObject({ ok: true });
+    expect((r.json as { version: string }).version).toBeTruthy();
   });
 
   it('returns a JSON body for unknown routes (not Express HTML)', async () => {

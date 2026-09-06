@@ -31,6 +31,15 @@ function loadDotEnv(): void {
 
 loadDotEnv();
 
+/** Version from the package manifest; used when `ADDON_VERSION` is unset. */
+const packageVersion = ((): string | undefined => {
+  try {
+    return (JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version?: string }).version;
+  } catch {
+    return undefined; // package.json missing (e.g. bundled oddly) — fall back below.
+  }
+})();
+
 /** Reads an env var, treating empty string as unset (`null`). */
 function env(name: string): string | null {
   const value = process.env[name];
@@ -79,11 +88,12 @@ export function loadConfig(): Config {
       .filter(Boolean),
     showLibraryCatalogs: envBool('SHOW_LIBRARY_CATALOGS', false),
     showSearchCatalogs: envBool('SHOW_SEARCH_CATALOGS', false),
+    logRequests: envBool('LOG_REQUESTS', true),
     addonId: env('ADDON_ID') ?? 'community.tube',
     addonName: env('ADDON_NAME') ?? 'Tube (Real-Debrid)',
     addonDescription:
       env('ADDON_DESCRIPTION') ??
       'Real-Debrid streams on standard Stremio movie and episode pages, with optional cloud catalogs.',
-    version: env('ADDON_VERSION') ?? '1.2.0',
+    version: env('ADDON_VERSION') ?? packageVersion ?? '0.0.0',
   };
 }

@@ -21,9 +21,20 @@ services:
       # BASE_URL=https://yourname.duckdns.org when served through the Caddy
       # HTTPS override (docker-compose.caddy.yml). Empty = derive from request.
       BASE_URL: "${BASE_URL:-}"
+      MIN_QUALITY: "${MIN_QUALITY:-}"
+      EXCLUDE_QUALITY: "${EXCLUDE_QUALITY:-}"
+      LOG_REQUESTS: "${LOG_REQUESTS:-true}"
     volumes:
       - tube-data:/app/data
     restart: unless-stopped
+    healthcheck:
+      # Node is guaranteed present (built from this repo); /healthz also checks
+      # that the state volume is writable.
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:7000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # RD Search backend: the actively-maintained Zilean fork (SolidRhino line).

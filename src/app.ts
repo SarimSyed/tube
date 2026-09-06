@@ -21,17 +21,37 @@ import { buildManifest } from './manifest.js';
 import { registerRoutes } from './routes.js';
 
 /**
+ * Create the two persisted blocked-hash stores for a data dir. Exported so the
+ * entry point can build them itself and flush them on graceful shutdown.
+ */
+export function createNegativeStores(dataDir: string): { negativeStore: NegativeStore; torboxNegatives: NegativeStore } {
+  return {
+    negativeStore: new NegativeStore(join(dataDir, 'blocked-hashes.json')),
+    torboxNegatives: new NegativeStore(join(dataDir, 'torbox-blocked-hashes.json')),
+  };
+}
+
+/** Optional overrides for `createApp` (used by the entry point for shutdown). */
+export interface CreateAppOptions {
+  negativeStore?: NegativeStore;
+  torboxNegatives?: NegativeStore;
+}
+
+/**
  * Build a fully wired Express app for the given configuration.
  * Long-lived services are created here; request-scoped debrid clients are
  * created per request inside the route handlers.
  */
-export function createApp(config: Config): Express {
+export function createApp(config: Config, options: CreateAppOptions = {}): Express {
   const caches = createCaches(config.cacheTtlSeconds);
 
   // Persisted stores of torrent hashes the debrid provider blocked as
-  // infringing — Real-Debrid and TorBox keep separate files.
-  const negativeStore = new NegativeStore(join(config.dataDir, 'blocked-hashes.json'));
-  const torboxNegatives = new NegativeStore(join(config.dataDir, 'torbox-blocked-hashes.json'));
+  // infringing — Real-Debrid and TorBox keep separate files. The entry point
+  // may hand them in so it can flush them on shutdown.
+  const { negativeStore, torboxNegatives } =
+    options.negativeStore && options.torboxNegatives
+      ? { negativeStore: options.negativeStore, torboxNegatives: options.torboxNegatives }
+      : createNegativeStores(config.dataDir);
 
   // Lint the manifest once at startup for early feedback (warnings only; never fatal).
   try {

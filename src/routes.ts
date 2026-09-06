@@ -8,6 +8,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { accessSync, constants, existsSync, mkdirSync } from 'node:fs';
 
 import type { Config } from './types.js';
 import type { ContentType, Meta } from './stremio.js';
@@ -155,7 +156,12 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
 
   // Light request logger. Logs the matched route *pattern* (e.g. '/:token/stream/:type/:id'),
   // never the raw URL, so the token embedded in the path is not leaked to logs.
+  // Disable with `LOG_REQUESTS=false` to quiet a busy server.
   app.use((req, res, next) => {
+    if (config.logRequests === false) {
+      next();
+      return;
+    }
     const t0 = performance.now();
     res.on('finish', () => {
       const ms = Math.round(performance.now() - t0);
@@ -171,8 +177,24 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
     res.redirect(307, '/configure');
   });
 
+  /**
+   * True when the data dir exists (created on demand) and is writable — the
+   * negative stores live there, so an unwritable volume means state cannot
+   * persist and the instance should be reported unhealthy.
+   */
+  const dataDirWritable = (): boolean => {
+    try {
+      if (!existsSync(config.dataDir)) mkdirSync(config.dataDir, { recursive: true });
+      accessSync(config.dataDir, constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   app.get('/healthz', (_req, res) => {
-    res.json({ ok: true });
+    const ok = dataDirWritable();
+    res.status(ok ? 200 : 503).json({ ok, version: config.version });
   });
 
   // The configure page is served both at the root and under a token path
@@ -218,7 +240,7 @@ export function registerRoutes(app: Express, deps: AppDeps): void {
   const catalogHandler = (req: Request, res: Response): void => {
     const token = resolveToken(req);
     if (!token) {
-      res.status(401).json({ err: 'missing_token', hint: 'Open /configure to set your Real-Debrid token' });
+      res.status(401).json({ err: 'missing_token', hint: 'Open /configure to set your debrid token' });
       return;
     }
     const { library, searchCatalog } = catalogsFor(token);

@@ -11,8 +11,9 @@ import type { CacheSet } from '../services/cache.js';
 import type { SearchService } from '../services/search.js';
 import type { NegativeStore } from '../services/negativeStore.js';
 import type { ContentType, Stream, StreamResponse } from '../stremio.js';
-import type { TorrentResult } from '../types.js';
+import type { RdTorrentSummary, TorrentResult } from '../types.js';
 import { normalizeTitle, parseFilename } from '../meta/parser.js';
+import { mapLimit } from '../util.js';
 import { torrentStreams } from './resolver.js';
 import { findCachedStreams, compareStreamCandidates } from './cacheProbe.js';
 import { CINEMETA_TIMEOUT_MS } from '../constants.js';
@@ -57,6 +58,10 @@ function bigramSimilarity(a: string, b: string): number {
 const TITLE_SIMILARITY_THRESHOLD = 0.9;
 /** Aim to return up to this many total streams (cloud + index). */
 const STREAM_TARGET = 30;
+/** Cap on matching cloud torrents expanded per request. */
+const CLOUD_MATCH_LIMIT = 6;
+/** Concurrency when expanding cloud torrents (RD round-trips overlap). */
+const CLOUD_EXPAND_CONCURRENCY = 4;
 
 interface YearOk {
   torrentYear?: number;
@@ -158,8 +163,12 @@ export class TtStreamProvider {
     const streams: Stream[] = [];
     const seenUrls = new Set<string>();
 
+    // Collect the matching downloaded torrents first (pure list filtering, no
+    // I/O), then expand them concurrently so the per-torrent RD round-trips
+    // (info + unrestrict) overlap instead of serializing.
+    const matches: RdTorrentSummary[] = [];
     for (const t of torrents) {
-      if (streams.length >= STREAM_TARGET) break;
+      if (matches.length >= CLOUD_MATCH_LIMIT) break;
       const p = parseFilename(t.filename);
       if (!p.title) continue;
       const torrentNorm = normTitle(p.title);
@@ -181,16 +190,27 @@ export class TtStreamProvider {
 
       // Only downloaded torrents have playable links.
       if (t.status !== 'downloaded') continue;
+      matches.push(t);
+    }
 
+    const expanded = await mapLimit(matches, CLOUD_EXPAND_CONCURRENCY, async (t): Promise<Stream[]> => {
       let info;
       try {
         info = await this.rd.getTorrentInfo(t.id);
       } catch {
-        continue;
+        return [];
       }
-      if (!info || info.status !== 'downloaded') continue;
+      if (!info || info.status !== 'downloaded') return [];
+      try {
+        return await torrentStreams(this.rd, info, season, episode);
+      } catch {
+        return [];
+      }
+    });
 
-      for (const s of await torrentStreams(this.rd, info, season, episode)) {
+    for (const list of expanded) {
+      if (streams.length >= STREAM_TARGET) break;
+      for (const s of list) {
         if (!s.url || seenUrls.has(s.url)) continue;
         seenUrls.add(s.url);
         streams.push(s);
@@ -292,25 +312,41 @@ export class TtStreamProvider {
       return compareStreamCandidates(a, b, preferred);
     });
     let candidates = ranked;
-    // Prefilter to the ones the index already knows are cached (DMM data), so we
-    // only add torrents that are likely instant — avoids RD add-throttling.
+    // Prefilter to releases the debrid already has cached so we only add
+    // torrents that resolve instantly — this is what keeps Tube as fast as
+    // Torrentio/Comet instead of add+poll+delete probing every uncached hit.
+    // Real-Debrid's own availability endpoint is authoritative (and TTL-cached);
+    // the index's cached hints (DMM hashlist) are the fallback when the endpoint
+    // is unavailable. TorBox filters candidates itself inside findCachedStreams.
     try {
-      const cached = this.rd.provider === 'torbox' ? new Set<string>() : await this.search.checkCached(ranked.map((r) => r.infoHash));
-      if (cached.size > 0) {
-        candidates = ranked.filter((r) => cached.has(r.infoHash));
+      if (this.rd.provider !== 'torbox') {
+        let cached: Set<string> | null = null;
+        try {
+          cached = await this.rd.instantAvailability(ranked.map((r) => r.infoHash));
+        } catch {
+          cached = null; // availability endpoint failed/disabled — use index hints
+        }
+        if (cached === null || cached.size === 0) {
+          const hinted = await this.search.checkCached(ranked.map((r) => r.infoHash));
+          if (hinted.size > 0) cached = hinted;
+        }
+        if (cached !== null && cached.size > 0) {
+          const cachedSet = cached;
+          candidates = ranked.filter((r) => cachedSet.has(r.infoHash));
+        }
       }
     } catch {
       // Unknown cache state — fall through to probing everything.
     }
     if (candidates.length === 0) {
-      console.warn(`[tt] no cached candidates remain for "${name}" after index filter`);
+      console.warn(`[tt] no cached candidates remain for "${name}" after the availability check`);
       return [];
     }
     const negKey = 'probe-neg';
     const negatives = this.negativesStore
       ? this.negativesStore.get()
       : (this.caches.misc.get(negKey) as Set<string> | undefined) ?? new Set<string>();
-    console.warn(`[tt] probing ${candidates.length} cached index result(s) for "${name}"`);
+    console.warn(`[tt] probing ${candidates.length} cached candidate(s) for "${name}"`);
     try {
       const streams = await findCachedStreams(this.rd, candidates, {
         season, episode, negatives,

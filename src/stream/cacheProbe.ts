@@ -24,6 +24,8 @@ const DEFAULT_MAX = 3;
 const DOWNLOAD_TARGET = 30;
 /** Never submit more than this many NEW downloads in a single stream request. */
 const MAX_NEW_DOWNLOADS = 3;
+/** TorBox: spend at most this long adding cached releases before returning. */
+const DEFAULT_TORBOX_ADD_BUDGET_MS = 5_000;
 
 /** Resolution -> rank for deterministic stream ordering (higher = better). */
 const QUALITY_RANK: Record<string, number> = {
@@ -104,6 +106,10 @@ export interface ProbeOptions {
   maxAttempts?: number;
   /** Total polling/delay budget, shared by all candidates. */
   timeoutMs?: number;
+  /** Once this many ms pass with streams in hand, stop adding more releases
+   * (TorBox cached loop; keeps the picker responsive and grows breadth over
+   * later opens instead of waiting on every release up front). */
+  cachedBudgetMs?: number;
   /** Aim for this many total entries before considering download top-up. */
   downloadTarget?: number;
   /** Cap on NEW download submissions per request. */
@@ -215,6 +221,9 @@ export async function findCachedStreams(
   const addDelayMs = opts.addDelayMs ?? (isTorbox ? 0 : 1_500);
   const max = opts.max ?? (isTorbox ? 30 : DEFAULT_MAX);
   const maxAttempts = opts.maxAttempts ?? (isTorbox ? 40 : 4);
+  // Time-box how long the cached-add loop spends per request (TorBox only).
+  const cachedBudgetMs = opts.cachedBudgetMs ?? (isTorbox ? DEFAULT_TORBOX_ADD_BUDGET_MS : 0);
+  const cachedStart = Date.now();
   const streams: Stream[] = [];
   const seenUrls = new Set<string>();
   const stopAt = Date.now() + (opts.timeoutMs ?? (isTorbox ? 60_000 : 12_000));
@@ -228,6 +237,10 @@ export async function findCachedStreams(
   let attempts = 0;
   for (const r of results) {
     if (streams.length >= max || attempts >= maxAttempts || Date.now() >= stopAt) break;
+    // Once we hold at least one playable stream, stop adding after the budget
+    // elapses: TorBox resolves cached adds quickly, so this bounds worst-case
+    // latency while already-added releases make the next open near-instant.
+    if (cachedBudgetMs > 0 && streams.length > 0 && Date.now() - cachedStart >= cachedBudgetMs) break;
     if (opts.negatives?.has(r.infoHash)) continue;
     if (attempts > 0 && addDelayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(addDelayMs, stopAt - Date.now())));

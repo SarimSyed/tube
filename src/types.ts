@@ -139,6 +139,8 @@ export interface Config {
   showLibraryCatalogs: boolean;
   /** Whether to expose the search catalog. */
   showSearchCatalogs: boolean;
+  /** Whether each HTTP request is logged to stdout (default true). */
+  logRequests: boolean;
   /** Stremio addon id used in the manifest. */
   addonId: string;
   /** Addon display name used in the manifest (Real-Debrid variant). */
