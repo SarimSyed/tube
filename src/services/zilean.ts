@@ -35,6 +35,7 @@ interface ZileanTorrent {
  */
 function toResult(t: ZileanTorrent): TorrentResult | null {
   if (!t.info_hash) return null;
+  if (t.adult) return null; // index flags adult titles — never surface them
   const raw = t.raw_title ?? t.parsed_title ?? t.info_hash;
   const title = t.cleaned_parsed_title ?? t.parsed_title ?? t.normalized_title ?? raw;
   const category = (t.category ?? '').toLowerCase();

@@ -70,4 +70,19 @@ describe('SearchService result caching', () => {
     expect(a[0].title).toBe('The Matrix');
     expect(b[0].title).toBe('The Matrix');
   });
+
+  it('excludes adult releases even when they match the query title', async () => {
+    const plain = r('Obsession');
+    const provider: TorrentProvider = {
+      name: 'fake',
+      search: vi.fn().mockResolvedValue([
+        plain,
+        { ...r('b'), category: '507' }, // adult index category
+        { ...r('c'), raw: 'Obsession.2017.Brazzers.mkv' }, // studio marker
+      ]),
+    };
+    const svc = new SearchService([provider], createCaches(3600));
+    const results = await svc.search('obsession', 'movie');
+    expect(results.map((x) => x.infoHash)).toEqual([plain.infoHash]);
+  });
 });

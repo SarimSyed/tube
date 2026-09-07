@@ -8,6 +8,7 @@ import type { ContentType } from '../stremio.js';
 import type { CacheSet } from './cache.js';
 import { normalizeTitle } from '../meta/parser.js';
 import { singleFlight } from '../util.js';
+import { isAdultRelease } from './adult.js';
 
 /** Split + normalize a title into its word tokens for fuzzy title matching. */
 export function normTokens(text: string): Set<string> {
@@ -122,9 +123,10 @@ export class SearchService {
       }
 
       const queryTokens = [...normTokens(normalized)];
-      // Keep only results whose title covers every query token (prefix match, a
-      // loose word-boundary check), then restrict to the requested type.
+      // Adult releases are never surfaced, regardless of how well the title
+      // matches — adult studios reuse mainstream names like "Obsession".
       const deduped = this.dedupe(combined).filter(r => {
+        if (isAdultRelease(r)) return false;
         if (opts.skipTitleFilter) return true;
         // Include the year so a "Matrix 1999" query can also match on it.
         const titleTokens = [...normTokens(`${r.title} ${r.year ?? ''}`)];
