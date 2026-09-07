@@ -1,363 +1,325 @@
-# How Tube resolves streams — a code walkthrough
+# How Tube turns a search into a playable stream
 
-This document traces what actually happens in the code when someone **searches** for a
-title and then **opens it to stream it** inside Stremio, so you can find your way around
-and know where to start coding. It matches the current source (routes split into
-`src/routes.ts` / `src/app.ts`, `PirateBay` + `YTS` always-on indexers, plus optional
-`Zilean` / `Torznab`).
+A plain-English walkthrough with **concrete values** at every step, plus a **tutorial** at
+the end showing exactly which function and which values to change to change the result.
 
-Read it top to bottom once, then jump to **“Where do I start coding?”** at the end.
+If you’re new here, **read Section 1 and Section 3 first** — those give you the whole shape
+without drowning in names. The middle sections just repeat Section 3 in more detail with
+the actual file/function names so you can find the code.
+
+> Main idea, memorise this one sentence:
+> **Tube answers “give me links for title X” by (a) asking “which indexers have X, and are
+> those copies cached on my debrid account?” then (b) turning each cached copy into a
+> *direct* file URL.** It never downloads or streams video itself.
 
 ---
 
-## 1. The big picture
+## 1. What actually happens when a user presses play — as a story
 
-Tube is a Stremio **addon**: Stremio calls a few HTTP endpoints on our server and renders
-the JSON we return. There are three resources (see `src/manifest.ts`):
+You search “Dune” in Stremio. Stremio shows you poster cards. You tap one, then tap play.
+Here’s the story of what Tube does — the words in **bold** are the pieces of data flowing
+between functions:
 
-| Endpoint (mounted in `src/routes.ts`) | What Stremio asks for | What we return |
+1. Stremio hits Tube’s **search page** with the word `Dune`. Tube forwards “Dune” to 2–4
+   torrent-index websites and asks each: “do you know Dune?” Each indexer answers with a
+   **list of releases** — e.g. one entry is `{infoHash, title:"Dune Part One 2021", quality:"2160p",
+   isSeries:false, …}`. Tube merges them, drops duplicates, keeps only movies, and sorts by
+   how well the title matches “Dune”.
+2. Tube asks your debrid account: “of these hashes, which ones do you already have cached?”
+   The answer is a **set of hashes**. Cached copies float to the top; uncached ones are
+   removed (unless the addon is set to allow downloads).
+3. Tube collapses all the releases for the same title into **one poster card**, and hides a
+   pointer inside the card’s id that records *which specific release* that card means.
+4. You tap play on that card. Stremio now asks Tube’s **stream page** for the card’s id.
+   Tube reads the id, works out which release it is, and asks the debrid “give me the direct
+   download URL for that torrent’s video file”. That **direct URL** is put in the response
+   as `streams[].url`.
+5. Stremio plays that URL straight from the debrid. Tube’s job is done.
+
+That’s it. Everything else in the code is just details of those five steps, plus handling
+two flavours of the same thing (browsing your *own* debrid library vs *searching the whole
+internet*).
+
+---
+
+## 2. The two kinds of “where does a title come from?”
+
+There are two entry points that both end up at the same place (the `/stream` route):
+
+| User action | Stremio calls | Tube handles with |
 |---|---|---|
-| `/:token/manifest.json` | “who are you, what can you do” | addon id, name, catalog list |
-| `/:token/catalog/{type}/{id}/...` | “list some titles” (browse/search rows) | `{ metas: [poster cards] }` |
-| `/:token/meta/{type}/{id}` | “detail page for one title / episode list” | `{ meta }` |
-| `/:token/stream/{type}/{id}` | “give me playable links for this title” | `{ streams: [...] }` |
+| Tap a result in **your debrid cloud** (files you already added) | `catalog/{type}/rd-library` then `stream` | `LibraryCatalog` → then resolve the `rd:…` id |
+| **Search the internet** for a title you don’t own | `catalog/{type}/rd-search` then `stream` | `SearchCatalog` → then resolve the `sr:…` id |
+| Open a **normal title** straight from Stremio’s own Cinemeta row (most common on phone) | `stream` with a `tt…` id | `TtStreamProvider` (auto: cloud first, then index) |
 
-The single most important invariant, repeated all over the code comments:
-
-> **Video never flows through the addon.** Tube only hands Stremio *direct* debrid URLs.
-> It does the work of *finding* which release is cached and *resolving* it to a direct
-> file URL, but once you press play, Stremio talks straight to Real-Debrid/TorBox.
-
-`/stream` is the heart of the addon. Everything else (catalog/meta) exists so Stremio has
-poster cards whose ids we can turn into streams later.
-
-### Where the files live
-
-```
-src/
-  index.ts          entry point: loads config, listens on a port (binds nothing itself)
-  app.ts            composition root: builds long-lived services + wires routes
-  routes.ts         HTTP layer: all Stremio endpoints + /configure
-  manifest.ts       the manifest JSON
-  configure.ts      the /configure setup page (picker HTML/JS)
-  config.ts         reads .env into typed Config
-  types.ts          domain types (TorrentResult, RdTorrent, Config, …)
-  stremio.ts        minimal Stremio protocol types (Stream, Meta, CatalogResponse, …)
-  constants.ts      catalog ids, page size, timeouts
-  id.ts             encode/decode this addon's own ids (rd:…, sr:…)
-  meta/
-    parser.ts       filename -> ParsedMedia (title, season, quality, languages)  [key!]
-    meta.ts         MetaService: builds poster/detail cards (TMDB/Cinemeta)
-  services/
-    realdebrid.ts   RdGateway interface + RealDebridClient (REST client)
-    torbox.ts       TorBoxClient: adapts TorBox API to the same RdGateway interface
-    debrid.ts       parse the token in the URL -> pick RD vs TorBox client
-    cachedRd.ts     CachedRealDebrid: TTL-cache wrapper over any RdGateway
-    cache.ts        TtlCache + CacheSet (the in-memory caches)
-    negativeStore.ts persisted set of hashes blocked as infringing
-    search.ts       SearchService: fan a query out to all indexers, dedupe, rank
-    piratebay.ts / yts.ts / zilean.ts / torznab.ts   the torrent indexers
-    tmdb.ts         optional poster/name enrichment
-  stream/
-    tt.ts           resolve a tt… Cinemeta id into streams (cloud + index)
-    resolver.ts     StreamResolver: resolve this addon's own rd:/sr: ids
-    cacheProbe.ts   findCachedStreams: probe index results against the debrid
-  catalogs/
-    library.ts      LibraryCatalog: "my cloud" rows
-    search.ts       SearchCatalog: advanced index search rows
-tests/              vitest specs (mocks of fetch, one per module)
-```
+Don’t fixate on these yet. They all funnel into **three shared building blocks** described
+in the next section.
 
 ---
 
-## 2. The debrid gateway abstraction (read this first — everything hangs off it)
+## 3. The three building blocks (the only functions you really need to know)
 
-Almost every layer talks to the debrid through one interface, `RdGateway`
-(`src/services/realdebrid.ts`). Two implementations implement it:
+Every flow reduces to these. Learn their **inputs → outputs** and you can read any of the
+flows below without getting lost.
 
-- `RealDebridClient` (`realdebrid.ts`) — calls Real-Debrid’s REST API.
-- `TorBoxClient` (`torbox.ts`) — adapts TorBox’s API into the *same* shape.
+### Building block A — `parseFilename(filename) → ParsedMedia`
+File: `src/meta/parser.ts:174`
 
-`CachedRealDebrid` (`cachedRd.ts`) wraps either one and adds TTL caching.
+Turns a release filename into structured data:
 
-This is why the rest of the code barely knows whether you use RD or TorBox. The
-interface methods you’ll meet in the flows below:
-
-```ts
-interface RdGateway {
-  provider?: 'realdebrid' | 'torbox';      // used to label streams TB / RD
-  allowUncached?: boolean;                 // may queue uncached downloads
-  listTorrents(): RdTorrentSummary[];      // what's in my cloud
-  getTorrentInfo(id): RdTorrent;           // status + files + links of one torrent
-  listDownloads(): RdDownload[];           // RD web-downloads (TorBox returns [])
-  addMagnet(magnet, cachedOnly?): {id};    // ask the debrid to fetch a magnet
-  selectAllFiles(id); deleteTorrent(id);
-  unrestrict(link): {download, filename};  // landing page -> DIRECT file url  [key]
-  instantAvailability(hashes): Set|null;   // which hashes are already cached
+```
+input : "Dune.Part.One.2021.2160p.HINDI.7.1.WEB-DL.mkv"
+output: {
+  title: "Dune Part One",        // cleaned title
+  year: 2021,
+  isSeries: false,
+  quality: "2160p",              // uppercase-ish
+  season: undefined, episode: undefined,
+  languages: ["Hindi"],          // detected audio languages
+  raw: "Dune.Part.One.2021.2160p.HINDI.7.1.WEB-DL.mkv",
 }
 ```
 
-The **credential string** in the URL (the `:token` segment) decides which client gets
-built — see `createDebridClient` in `services/debrid.ts`:
+This is how Tube knows a torrent named `Dune...2160p.HINDI` is a 2160p Hindi *movie*.
+Nearly every decision downstream starts here. If you change how filenames are understood,
+you change everything.
 
-- `torbox-download:<token>~langs` → TorBox, downloads allowed
-- `torbox:<token>~langs`        → TorBox
-- `<token>~langs`               → Real-Debrid
+### Building block B — `rd` (the debrid gateway)
+Interface: `src/services/realdebrid.ts` (`RdGateway`), impls `realdebrid.ts` + `torbox.ts`.
 
----
+Every “talk to the user’s debrid account” call goes through this one object. The four you’ll
+care about most:
 
-## 3. Flow: the configure/install step
+| method | question it answers | returns |
+|---|---|---|
+| `rd.listTorrents()` | what’s in my cloud? | `[{id, filename, hash, status: 'downloaded'|'downloading', …}]` |
+| `rd.instantAvailability(hashes)` | which of these hashes are cached? | `Set<hash>` (or `null` if unknown) |
+| `rd.addMagnet(magnet)` | please fetch this torrent | `{id}` |
+| `rd.unrestrict(link)` | give me the *direct* file URL | `{download, filename}` |
 
-1. User opens `/configure` → `renderConfigurePage` (`configure.ts`) returns HTML; the page
-   JS builds an install URL like
-   `https://…/torbox-download%3A<token>~hindi%2Ctamil/manifest.json`.
-2. Stremio installs that URL → fetches `manifest.json`. The `:token` segment carries the
-   credential. `manifestHandler` (`routes.ts`) calls `createDebridClient(token,…)` just to
-   read `.provider` and builds a manifest whose addon id/name/catalog set differ for RD vs
-   TorBox.
-3. All later catalog/meta/stream requests carry the same `:token`, so handlers can rebuild
-   the right client per request via `resolveToken` → `clientFor` (`routes.ts`).
+Note RD and TorBox both implement this, so the rest of the app doesn’t care which one you
+use. This is the seam to understand: **`rd` is Tube’s whole interface to debrid.**
 
----
+### Building block C — `torrentStreams(rd, torrent) → Stream[]`
+File: `src/stream/resolver.ts:96`
 
-## 4. Flow: SEARCHING (getting title cards)
+Turns one *already-downloaded* torrent into playable URLs:
 
-There are actually **two search surfaces**, and they feed streams differently:
-
-### A) Your own cloud: `catalog/{type}/rd-library` (and `rd-downloads`)
-
-Handled by `LibraryCatalog` (`catalogs/library.ts`):
-
-1. `rd.listTorrents()` (and/or `listDownloads()`) → raw filenames.
-2. Each filename → `parseFilename()` (`meta/parser.ts`) → `ParsedMedia`
-   (title, year, `isSeries`, season/episode, quality, languages).
-3. Filter to the requested `type`, paginate (`PAGE_SIZE`, `skip`).
-4. Each entry becomes a **meta card** with an id built by `id.ts`:
-   - torrent → `rd:<torrentId>`
-   - download → `rd:dl:<downloadId>`
-   - series single episode later → `rd:<torrentId>:<season>:<episode>`
-5. Cards are enriched into posters/names by `MetaService.preview` (`meta/meta.ts`,
-   TMDB if a key is set, else Cinemeta).
-
-### B) Index search: `catalog/{type}/rd-search` (the “search anything” path)
-
-Handled by `SearchCatalog` (`catalogs/search.ts`) — this is the DMM-like live search:
-
-1. `extra.search` query → `searchService.search(query, type)` (`services/search.ts`).
-2. `SearchService` fans the query out to every registered `TorrentProvider` in parallel
-   (`Promise.allSettled`), dedupes by `infoHash` (preferring copies that carry an IMDb id),
-   applies a title-token filter, restricts to movie/series, re-ranks by query relevance,
-   caches the result.
-3. The providers are registered once in `app.ts`:
-   `ZileanProvider` (opt-in, needs URL+key) → `PirateBayProvider` → `YtsProvider` (movies)
-   → `TorznabProvider` (opt-in). Each returns `TorrentResult[]` — one object per release
-   with `infoHash`, `title`, `sizeBytes`, `quality`, `season/episode`, `seeders`, `imdbId`,
-   `isSeries`, `raw`, `source`.
-4. Back in `SearchCatalog.catalog`, availability is checked with
-   `rd.instantAvailability(hashes)` — results already cached are floated to the top.
-   Unless `includeUncached` is on, uncached results are dropped.
-5. Duplicate *titles* collapse to **one poster card**; the releases stay hidden for later.
-   The card’s id encodes the specific release via `searchId()` → `sr:<infoHash>:<base64 context>`
-   (the base64 keeps title/imdb info recoverable even after the cache clears).
-6. `metaService.preview` gives the card a poster/name.
-
-> **Why ids matter:** the poster card’s `id` is what Stremio later asks `/stream` for.
-> `rd:` ids point at a specific torrent in your cloud; `sr:` ids point at a specific
-> indexed release (by info hash). When you search for a *series*, cards get episodes via
-> `meta` (see next).
-
-### Meta for a card: `meta/{type}/{id}`
-
-`metaHandler` (`routes.ts`) routes:
-- `tt…` ids → proxied to Cinemeta (posters/detail).
-- `sr:` ids → `SearchCatalog.meta` builds a detail (series episodes come from canonical
-  Cinemeta via `MetaService.seriesMeta`, else from re-searching same-title results).
-- `rd:` ids → `LibraryCatalog.meta` builds a detail; a season-pack torrent is expanded
-  into per-episode `videos` each with an `rd:…:s:e` id.
-
----
-
-## 5. Flow: VIEWING A STREAM (`stream/{type}/{id}`)  ← the core
-
-`streamHandler` in `routes.ts` does:
-
-```ts
-const rd = clientFor(token);                     // build RD/TorBox client (+cache)
-const negatives = rd.provider === 'torbox' ? torboxNegatives : negativeStore;
-const langs = preferredLanguages(token);         // the ~hindi,tamil list
-const resolver  = new StreamResolver(rd, { search, caches, negatives, preferredLanguages: langs });
-const ttProvider = new TtStreamProvider(rd, caches, { search, negatives, preferredLanguages: langs, qualityFilters });
-
-const promise = id.startsWith('tt')
-  ? ttProvider.resolve(type, id)      // standard Cinemeta title/episode
-  : resolver.resolve(id);             // our own rd:/sr: ids
+```
+input : (rd, a torrent whose files = [ {path:"...mkv", ...}, ... ], maybe season/episode)
+output: [ Stream, Stream, ... ]   each: { url: <direct file url>, name, description, ... }
 ```
 
-So there are **two resolution engines** depending on the id shape.
-
-### Engine 1 — `TtStreamProvider.resolve(type, id)` (`stream/tt.ts`)
-
-Used when Stremio opens a **normal Cinemeta title** (`tt123…` or `tt…:season:episode`).
-
-1. Fetch the title’s name/year from Cinemeta (`cinemetaMeta`, TTL-cached) so we can match.
-2. `rd.listTorrents()` and scan your **cloud** for matching releases:
-   - `parseFilename(t.filename)` → title/year/isSeries/season/episode/quality/languages;
-   - compare normalized title to the Cinemeta name (`normTitle` + bigram similarity);
-   - enforce movie vs series and the requested season/episode.
-3. Only `status === 'downloaded'` torrents qualify (only those have playable links).
-4. `rd.getTorrentInfo(id)` then `torrentStreams(rd, info, season, episode)` → one `Stream`
-   per playable file (details in §6). Cloud streams go first, deduped by URL, capped at 30.
-5. **Top-up:** if fewer than 30 so far and an indexer is available, `searchAndAdd`:
-   - searches the index by title (`searchService.search`),
-   - also searches each preferred language explicitly (`"Title hindi"`, `skipTitleFilter`)
-     so dubbed releases surface,
-   - ranks candidates (title/episode score, then quality→seeders→size→language),
-   - pre-filters to index-known-cached hashes when possible (avoids debrid add-throttling),
-   - calls `findCachedStreams(...)` to *probe* them against the debrid (see §7).
-6. Series + downloads-on: if this episode was itself queued as a download, also pre-fetch
-   the next episode (`queueNextEpisode`) for binge continuity.
-
-### Engine 2 — `StreamResolver.resolve(id)` (`stream/resolver.ts`)
-
-Used when Stremio asks about one of **our own ids** (from a catalog card).
-
-- `parseLibraryId(id)` → `resolveLibrary`:
-  - `rd:dl:<id>` → look up in `rd.listDownloads()`, direct URL → one stream.
-  - `rd:<torrentId>` or `rd:<tid>:<s>:<e>` → `rd.getTorrentInfo`; if not `downloaded`,
-    return an explanatory empty list; else `torrentStreams(rd, info, season?, episode?)`.
-- `parseSearchId(id)` (an `sr:` id) → `resolveSearch`:
-  - recover the clicked release (embedded base64 context or the search cache),
-  - if we know its title, probe that title’s cached copies (clicked one first) so a
-    blocked/uncached pick falls through to a sibling release,
-  - else probe just the bare hash — both via `findCachedStreams` (§7).
+Inside it calls `rd.unrestrict` on each video file to get the direct URL. The **label**
+(`TB 2160P · Hindi ⚡`) is made here by `playableStream` (`resolver.ts:41`).
 
 ---
 
-## 6. How a release becomes a playable `Stream` (`torrentStreams`)
+## 4. A full worked example with real values
 
-This is in `resolver.ts`. Given a downloaded `RdTorrent` with `files[]` and `links[]`:
+Let’s trace one request: a movie you searched on the internet, opening the 2160p Hindi copy.
 
-1. `resolveFiles`: map each of the torrent’s `links[]` (download URLs) to its source file —
-   filename match first, positional fallback.
-2. Filter to video files (`.mkv/.mp4/…`, excluding `sample`).
-3. Narrow to the requested season/episode when given.
-4. For each candidate call **`rd.unrestrict(url)`**:
-   - **Real-Debrid:** `links[]` are HTML landing pages, so `unrestrict` POSTs to
-     `/unrestrict/link` and returns `{ download }` — the **direct** file URL.
-   - **TorBox:** `links[]` are internal `torbox://{torrent}/{file}/{name}` refs (no
-     credentials embedded), and `unrestrict` resolves them via `/requestdl` to a direct URL.
-5. `playableStream(url, filename, bytes, provider, seeders)` builds the final object:
-   ```js
-   { url: <direct https file>,
-     name: `TB 2160P · Hindi ⚡`,           // TB=TorBox, RD=Real-Debrid; ⚡ = cached/playable
-     description: `<filename>\n<size>\n<seeders>`,
-     behaviorHints: { bingeGroup, filename, videoSize, notWebReady } }
-   ```
-6. If `unrestrict` reports the file as blocked/infringing (`isBlockedFileError`), the
-   torrent’s hash is added to the **negatives** set (persisted) so we never try it again.
+### Step 1 — Stremio asks for the search catalog
+```
+GET /{credential}/catalog/movie/rd-search?search=Dune
+```
+- `credential` is like `torbox:<token>~hindi,tamil` — `routes.ts` decodes it, builds `rd`,
+  reads preferred languages `['hindi','tamil']`.
+- `SearchCatalog.catalog('movie','Dune',baseUrl)` (`catalogs/search.ts:34`) runs.
 
----
+### Step 2 — fan the query out to indexers
+`searchService.search('Dune','movie')` → `src/services/search.ts:96`.
 
-## 7. Probing the index: `findCachedStreams` (`stream/cacheProbe.ts`)
+Each indexer returns releases (their `.search` methods). Say PirateBay + YTS return:
 
-When we have *index candidates* (not yet known to be in the cloud) we must find out which
-are actually cached and instantly playable. Two provider strategies:
+```
+[
+ { infoHash:"aaaa…", title:"Dune Part One (2021)", raw:"Dune.Part.One.2021.2160p.HINDI.mkv",
+   year:2021, isSeries:false, quality:"2160p", sizeBytes:…, seeders:42, source:"yts" },
+ { infoHash:"bbbb…", title:"Dune 1984", raw:"Dune.1984.1080p.mkv", year:1984, isSeries:false,
+   quality:"1080p", … },
+ { infoHash:"cccc…", title:"Dune Part One", raw:"Dune.Part.One.2021.720p.mkv", … },
+]
+```
+`SearchService` dedupes by `infoHash`, keeps only `isSeries === false`, then sorts by
+relevance. **Output = ordered list.** (The 1984 movie usually scores lower than a clean
+2021 title match, so it lands later.)
 
-**TorBox fast path** (check is authoritative, no add-throttle):
-1. `rd.instantAvailability(hashes)` → cached set; keep only cached ones.
-2. Deterministic sort (`quality → seeders → size → preferred language` via
-   `compareStreamCandidates`) and collapse true duplicates (same quality *and* known size).
-3. Preferred-language releases float to the top.
-4. If `allowUncached` and we’re under the target, submit a few uncached releases as
-   background downloads and surface them as “TorBox — downloading” placeholder streams.
+### Step 3 — which are cached on your account?
+`SearchCatalog.catalog` calls `rd.instantAvailability(hashes)`. Suppose your TorBox has
+`aaaa` and `cccc` cached, not `bbbb`. Cached float to the top; uncached `bbbb` is dropped
+(no downloads enabled here).
 
-**Real-Debrid probe path** (classic add-magnet + poll):
-1. For each candidate in order: `addMagnet("magnet:?xt=urn:btih:<hash>")`.
-2. Poll `getTorrentInfo` until it reaches `downloaded` (or a hard terminal state like
-   `error`/`dead`), within a grace window.
-3. If it reaches `waiting_files_selection`, `selectAllFiles`, then keep polling.
-4. `downloaded` → `torrentStreams(...)` → playable `Stream`s, deduped by URL.
-5. If it stayed uncached/queued, **delete it again** (`deleteTorrent`) so the user’s
-   account stays clean, and move to the next candidate.
-6. Throttle/auth (429/401/403) aborts the whole probe (back off, keep what we have);
-   only genuine “blocked file” errors are recorded as negatives and skipped.
+### Step 4 — collapse to one poster card
+All “Dune Part One” rows collapse to one card. Its id becomes something like
+`sr:aaaa…:<base64 of {title,year,isSeries}>`. `metaService.preview` adds the poster.
 
-Bounded throughout (`maxAttempts`, `timeoutMs`, `addDelayMs`, caps on new downloads) so one
-request never hammers the debrid.
+**Response to Stremio:** `{ metas: [ { id:"sr:aaaa…:…", name:"Dune: Part One", poster:"…" } ] }`
 
----
+### Step 5 — you tap play, Stremio asks for streams
+```
+GET /{credential}/stream/movie/sr:aaaa…:<base64>
+```
+`routes.ts`: `id` does not start with `tt`, so it goes to `StreamResolver.resolve(id)`
+(`stream/resolver.ts:165`) → `parseSearchId` → `resolveSearch`.
 
-## 8. Supporting machinery
+### Step 6 — resolve that specific release to a direct URL
+`findCachedStreams(rd, [thatRelease], …)` (`cacheProbe.ts:161`):
+- TorBox path: `rd.instantAvailability` confirms cached → keep it.
+- `rd.addMagnet("magnet:?xt=urn:btih:aaaa…")` → get `{id}`.
+- poll `rd.getTorrentInfo(id)` until `downloaded` → gives the torrent’s `files[]`+`links[]`.
+- `torrentStreams(rd, info, undefined, undefined)` → for the `…2160p.HINDI.mkv` file, call
+  `rd.unrestrict(link)` → direct URL.
+- `playableStream(url, "…HINDI.mkv", bytes, 'torbox', seeders)` → builds:
 
-- **Caches** (`cache.ts`, `cachedRd.ts`): separate `TtlCache`s for torrent list, torrent
-  info, downloads, instant-availability, TMDB (30× TTL), search, and misc. `CachedRealDebrid`
-  namespaces entries per account (`cacheKey`) and invalidates on mutations.
-- **Negatives** (`negativeStore.ts`): file-backed set of hashes blocked as infringing,
-  keyed separately for RD vs TorBox so one provider’s blocks don’t poison the other
-  (created in `app.ts`, passed into routes).
-- **Language preference** (`debrid.ts` → `preferredLanguages`): parsed from the `~langs`
-  suffix; used to float matching releases to the top and to run per-language index searches.
-- **Quality filters** (`cacheProbe.ts`): `passesQualityFilters` enforces configured
-  `minQuality` / `excludeQuality` before anything is added to the debrid.
-- **`parseFilename`** (`meta/parser.ts`) is load-bearing everywhere — it turns release
-  filenames into structured data (title, quality, season/episode, languages). Many flows
-  reduce to “parse filename → compare to what we want”.
+```
+{ url: "https://…/file.mkv?token=…",   // DIRECT debrid URL — this is what plays
+  name: "TB 2160P · Hindi ⚡",
+  description: "…HINDI.mkv\n24.5 GB\n42 seeds",
+  behaviorHints: { … } }
+```
+
+**Response to Stremio:** `{ streams: [ { url: "https://…", name: "TB 2160P · Hindi ⚡" } ] }`
+Stremio plays that URL directly. Done.
 
 ---
 
-## 9. Where do I start coding?
+## 5. The two resolution engines in more detail (only if you need it)
 
-Best strategy: **pick one request and follow it, writing/reading a test for it.** The test
-suite is the map — every module in `tests/` mocks `fetch` (RD/TorBox/indexers) and drives a
-real instance, so you can iterate fast without a debrid account.
+Everything hits `/stream` (`routes.ts`, `streamHandler`). It branches on the id prefix:
 
-**Orienting anchors**
-- To see a request shape end-to-end, read `tests/tt.test.ts`, `tests/resolver.test.ts`,
-  and `tests/cacheProbe.test.ts` — they show stream resolution with mocked debrid/index.
-- `tests/configure.test.ts` runs the configure page’s JS in a VM and checks the generated
-  URL.
-- Read `tests/parser.test.ts` first if you plan to touch filename parsing.
+### Engine 1 — normal `tt…` titles → `TtStreamProvider.resolve` (`stream/tt.ts:166`)
+Used when you open a title straight from Cinemeta (you did *not* use Tube’s search). Logic:
 
-**Common starting points by task**
+1. Ask Cinemeta for the title’s real name/year (`cinemetaMeta`).
+2. **Cloud pass:** scan `rd.listTorrents()`. For each torrent, `parseFilename` it and compare
+   title/year/season/episode to the Cinemeta meta. If it’s `downloaded`, resolve it to
+   streams (`torrentStreams`). Cloud streams go first.
+3. **Index top-up:** if fewer than ~30 streams and an indexer exists (`searchAndAdd`,
+   `tt.ts:318`): search the index for the title (+ each preferred language), rank, then
+   `findCachedStreams` to check/probe caching. Anything cached streams instantly.
 
-| I want to… | Start here |
-|---|---|
-| Understand/change how a stream URL is produced | `torrentStreams` + `playableStream` in `stream/resolver.ts` |
-| Add a torrent index source | implement `TorrentProvider` (model it on `yts.ts` / `piratebay.ts`), register it in `app.ts`, add `tests/<name>.test.ts` |
-| Change how search ranks results | `SearchService.search` (`services/search.ts`) + `compareStreamCandidates` (`cacheProbe.ts`) |
-| Change preferred-language behavior | `findCachedStreams` + `hasPreferredLanguage` (`cacheProbe.ts`) + `searchAndAdd` in `stream/tt.ts` |
-| Change quality gating | `passesQualityFilters` (`cacheProbe.ts`) + the `qualityFilters` wiring in `routes.ts` |
-| Support a new debrid provider | implement `RdGateway` (mirror `TorBoxClient`), branch in `createDebridClient` (`services/debrid.ts`), map it in `routes.ts`/`manifest.ts` |
-| Add/change an id shape | `id.ts` (encode/decode) + the branches in `routes.ts` (tt vs rd:/sr:), `resolver.ts`, `SearchCatalog.meta`, `LibraryCatalog.meta` |
-| Change the configure page UI | `configure.ts` (it’s one big HTML template; tests in `configure.test.ts`) |
-| Change a catalog row set | `catalogs/library.ts`, `catalogs/search.ts` |
+This is why, even for a title you don’t own, the phone search page shows streams: Tube
+finds index releases for it and, if your debrid has them cached, returns direct links.
 
-**A concrete “first exercise”** to orient yourself:
-Open `tests/resolver.test.ts`. Note how the test builds a fake `RdGateway` (or mocks
-`fetch`), calls `StreamResolver`/`torrentStreams`, and asserts on the returned `streams[].url`.
-Then change `playableStream`’s label logic in `stream/resolver.ts` (e.g. the name format)
-and watch that test — and the tt tests — tell you what you broke. That loop
-(module → its test → edit → run `npm test`) is the fastest way to get productive.
+### Engine 2 — our own `rd:`/`sr:` ids → `StreamResolver.resolve` (`stream/resolver.ts:165`)
+For cards that came from Tube’s own catalogs.
+- `rd:` ids → `resolveLibrary` (`resolver.ts:180`): fetch that exact cloud torrent/download.
+- `sr:` ids → `resolveSearch` (`resolver.ts:207`): resolve the specific release from the
+  search card, probing sibling cached copies if the clicked one is unavailable.
 
+### The probe helper — `findCachedStreams` (`cacheProbe.ts:161`)
+Shared by both engines. Figures out which index candidates are cached and playable now.
+Two behaviours by provider:
+- **TorBox:** cache check is authoritative & fast; also can queue uncached downloads.
+- **Real-Debrid:** classic add-magnet-then-poll, delete-if-uncached, throttle-aware.
+
+---
+
+## 6. TUTORIAL — “I want to change the result I get”
+
+The fastest way to learn is to change something and see the tests react. Pick a goal below;
+each tells you **which function is the key**, **what values go in/out**, and **exactly what
+to edit**. All have a matching test file.
+
+Run tests while you work:
 ```bash
-npm test                 # whole suite
-npx vitest run tests/resolver.test.ts   # one file
-npm run typecheck        # TS errors
-npm run dev              # run locally on :7000 (needs a real token to be useful)
+npx vitest run tests/tt.test.ts        # or resolver / searchCatalog / cacheProbe
+npm test
+npm run typecheck
 ```
+
+### Goal A — change the stream’s visible label (e.g. “TB 2160P · Hindi ⚡”)
+**Key function:** `playableStream` — `src/stream/resolver.ts:41`.
+
+- **In:** `url` (direct file url), `filename`, `bytes`, `provider` (`'torbox'`/`'realdebrid'`),
+  `seeders`.
+- **Out:** a `Stream` object whose `.name`/`.description` Stremio shows.
+- **What to change:** the `name:` line, e.g.
+  ```js
+  name: `${label}${p.quality ? ` ${p.quality}` : ''}${langLine} ⚡`,
+  ```
+  Change it to `… ${p.quality} [${p.languages.join('/')}]` or drop the ⚡. Because it already
+  parsed the filename (`parseFilename`), you have `p.title/p.quality/p.languages/p.isSeries`
+  available right here.
+- **Test:** `tests/resolver.test.ts` asserts on `.name`. Edit, run, see what breaks.
+
+### Goal B — change which release wins when several are cached (ordering)
+**Key function:** `compareStreamCandidates(a, b, preferredLanguages)` —
+`src/stream/cacheProbe.ts:49`. Returns a *negative* number if `a` is better than `b`.
+
+- **In:** two `TorrentResult`s + your preferred languages.
+- **Order it currently applies:** quality rank → seeders → size → preferred language.
+- **What to change:** swap the order of those `if` blocks — e.g. put preferred language
+  first, or add a new criterion like “prefer larger seeders over resolution”.
+- **Test:** `tests/cacheProbe.test.ts` (comparator cases).
+
+### Goal C — make Tube always show a *minimum* quality or drop cams
+**Key function:** `passesQualityFilters(result, minQuality, excludeQuality)` —
+`src/stream/cacheProbe.ts:81`. Runs *before* anything is added/probed.
+
+- **In:** one `TorrentResult`, plus config `minQuality`/`excludeQuality` (from `.env`, e.g.
+  `MIN_QUALITY=1080p`, `EXCLUDE_QUALITY=hdcam,cam`).
+- **Out:** boolean keep/drop.
+- **What to change:** add a rule, e.g. also reject results with no seeders, or parse a
+  source token (CAM/HDTS) out of `result.raw`.
+- **Test:** `tests/cacheProbe.test.ts`.
+
+### Goal D — change how search ranks which *title* is the right “Dune”
+**Key function:** `SearchService.search` → `rankByRelevance` — `src/services/search.ts:37`.
+
+- **In:** a result + the raw user query.
+- **Out:** a score; higher = more relevant. Currently `coverage*2 + precision`.
+- **What to change:** the scoring math, or the earlier token filter at `search.ts` (the
+  `queryTokens.every(...)` block) that decides whether a result is kept at all.
+- **Test:** `tests/search.test.ts`.
+
+### Goal E — make dubbed/Hindi releases surface more (or less)
+Two levers, both about **preferred languages** (the `~hindi,tamil` part of your token):
+
+1. Float-to-top: in `findCachedStreams` (`cacheProbe.ts`), `isPreferred(r)` moves up to 5
+   matching releases to the front of the list. Change “5” or the match logic.
+2. Extra searches: in `TtStreamProvider.searchAndAdd` (`tt.ts:318`), for each preferred
+   language it also runs `search(title + " hindi")`. Add/remove there.
+
+Test files: `cacheProbe.test.ts`, `tt.test.ts`.
+
+### Goal F — add a brand-new torrent indexer (say, your own source)
+1. Create a provider object returning `Promise<TorrentResult[]>` for `search(query)` — copy
+   the shape of `src/services/yts.ts` (simplest provider, movies-only).
+2. Register it in `src/app.ts` where `providers.push(...)` happen (see `piratebay`, `yts`).
+3. Write `tests/<name>.test.ts` mocking `fetch`.
+
+### Goal G — make a new provider (not debrid) the answer / add a debrid
+That’s a bigger change, but the seam is `RdGateway` (Section 3B). Everything above it
+(stream logic, labels, ordering, language) is provider-agnostic, so a new debrid = a new
+`RdGateway` implementation + a branch in `createDebridClient` (`services/debrid.ts`).
 
 ---
 
-## 10. Quick glossary
+## 7. “Which function should I even look at first?”
 
-- **TorrentResult** — one indexed release (hash, title, quality, season/ep, size, seeders…).
-- **RdGateway** — the debrid abstraction (RD or TorBox). Always go through it, never call a
-  vendor API directly from a flow.
-- **`unrestrict`** — turning a debrid *landing* link into a *direct* file URL. This is what
-  makes streams actually playable.
-- **negatives** — hashes the debrid blocked as infringing; persisted so we don’t retry them.
-- **Cached** (vs uncached/downloading) — a release the debrid already holds vs one we must
-  queue. Cached = instant ⚡ stream; uncached = only if downloads are allowed, shown as
-  “downloading”.
-- **`rd:` / `sr:` ids** — Tube’s self-owned stream ids (cloud item / indexed search hit).
-  Normal `tt…` ids go through `TtStreamProvider` instead.
+A tiny decision map:
+
+- The **request arrives** → `src/routes.ts` (all routes live here).
+- **Do we know if it’s cached?** → `rd.instantAvailability` / `findCachedStreams`.
+- **Turn a filename into data** → `parseFilename` (`meta/parser.ts`).
+- **Turn a downloaded torrent into URLs** → `torrentStreams` → `unrestrict`.
+- **Build the visible label** → `playableStream`.
+- **Talk to a debrid** → through `rd` (never call RD/TorBox APIs directly).
+
+---
+
+## 8. Glossary of names you’ll meet
+
+- **`TorrentResult`** — one *indexed* release (`{infoHash,title,year,isSeries,quality,season,episode,sizeBytes,seeders,imdbId,raw,source}`).
+- **`RdTorrent`/`RdTorrentSummary`** — one torrent *in your debrid cloud* (has `status`,
+  and when downloaded, `files[]`+`links[]`).
+- **`ParsedMedia`** — output of `parseFilename` (Section 3A).
+- **`Stream`** — one playable option Stremio shows (`{url,name,description,behaviorHints}`).
+- **`rd`** — the gateway object; the one seam to all debrid providers.
+- **cached / ⚡** — the debrid already holds that release → instant.
+- **uncached / downloading** — we queued it; only if downloads are allowed.
+- **`negatives`** — hashes the debrid blocked as infringing; persisted so we never retry.
+- **`rd:` / `sr:` / `tt…` ids** — the three id shapes that decide which engine resolves a
+  stream (Section 5).

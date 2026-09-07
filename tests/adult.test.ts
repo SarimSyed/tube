@@ -27,6 +27,13 @@ describe('isAdultRelease', () => {
     expect(isAdultRelease(r({ raw: 'obsession-hd-hustler-1080p' }))).toBe(true);
   });
 
+  it('flags the real-world download rows reported for "Obsession"', () => {
+    expect(isAdultRelease(r({ raw: 'BFTP18 26 07 04 Lisa H Black Becomes My New Obsession XXX 1080p' }))).toBe(true);
+    expect(isAdultRelease(r({ raw: 'PlayboyPlus 26 06 26 Malaya Mikos Beautiful Obsession XXX 1080p' }))).toBe(true);
+    expect(isAdultRelease(r({ raw: 'Ladyboy Obsession - Nadia - Shimmery Bareback Bliss For Blonde Slut 1080p' }))).toBe(true);
+    expect(isAdultRelease(r({ raw: 'BFTP18 26 07 04 Lisa H Black Becomes My New Obsession XXX 480p ' }))).toBe(true);
+  });
+
   it('keeps mainstream releases that share the word (incl. the film xXx)', () => {
     expect(isAdultRelease(r())).toBe(false);
     expect(isAdultRelease(r({ raw: 'xXx.Return.of.Xander.Cage.2017.1080p.mkv' }))).toBe(false);
